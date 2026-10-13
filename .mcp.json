@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "texcraft": {
+      "command": "./target/release/texcraft-core",
+      "args": ["--mcp"]
+    }
+  }
+}

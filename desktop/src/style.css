@@ -1,0 +1,176 @@
+@import "tailwindcss";
+@import "material-symbols/outlined.css";
+@import "./pdf-text-layer.css";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Overleaf design tokens (neutral / green / blue / red / yellow scales). */
+:root {
+  --ol-green: #098842;
+  --ol-green-hover: #07713a;
+  --ol-green-light: #e6f4ea;
+  --ol-blue: #366cbf;
+  --ol-red: #b83a33;
+  --ol-red-light: #fbeaea;
+  --ol-yellow: #de8014;
+  --ol-yellow-light: #fdf3e5;
+  --ol-info-light: #e8effa;
+
+  --header: #ffffff;
+  --header-fg: #1b222c;
+  --header-muted: #5d6879;
+  --header-hover: #e7e9ee;
+  --header-border: #e7e9ee;
+  --toolbar: #f4f5f6;
+  --toolbar-fg: #1b222c;
+  --sidebar: #f4f5f6;
+  --sidebar-fg: #2f3a4c;
+  --sidebar-muted: #677283;
+  --sidebar-hover: #e7e9ee;
+  --sidebar-selected: #d7ecdc;
+  --sidebar-selected-fg: #0b5c2f;
+  --surface: #ffffff;
+  --surface-fg: #1b222c;
+  --surface-muted: #5d6879;
+  --surface-border: #d0d5dd;
+  --surface-hover: #f4f5f6;
+  --pdf-bg: #e7e9ee;
+  --divider: #d0d5dd;
+  --app-bg: #ffffff;
+}
+
+.dark {
+  --header: #1b222c;
+  --header-fg: #f4f5f6;
+  --header-muted: #afb5c0;
+  --header-hover: #2f3a4c;
+  --header-border: #1b222c;
+  --toolbar: #262f3c;
+  --toolbar-fg: #e7e9ee;
+  --sidebar: #2c3645;
+  --sidebar-fg: #e7e9ee;
+  --sidebar-muted: #9da7b7;
+  --sidebar-hover: #3a465a;
+  --sidebar-selected: #098842;
+  --sidebar-selected-fg: #ffffff;
+  --surface: #2c3645;
+  --surface-fg: #f4f5f6;
+  --surface-muted: #afb5c0;
+  --surface-border: #495365;
+  --surface-hover: #3a465a;
+  --pdf-bg: #495365;
+  --divider: #1b222c;
+  --app-bg: #1b222c;
+  --ol-green-light: #173d2a;
+  --ol-red-light: #3d2326;
+  --ol-yellow-light: #3d3220;
+  --ol-info-light: #23324a;
+}
+
+@theme inline {
+  --color-accent: var(--ol-green);
+  --color-accent-hover: var(--ol-green-hover);
+  --color-accent-light: var(--ol-green-light);
+  --color-danger: var(--ol-red);
+  --color-danger-light: var(--ol-red-light);
+  --color-warning: var(--ol-yellow);
+  --color-warning-light: var(--ol-yellow-light);
+  --color-info: var(--ol-blue);
+  --color-info-light: var(--ol-info-light);
+  --color-header: var(--header);
+  --color-header-fg: var(--header-fg);
+  --color-header-muted: var(--header-muted);
+  --color-header-hover: var(--header-hover);
+  --color-header-border: var(--header-border);
+  --color-toolbar: var(--toolbar);
+  --color-toolbar-fg: var(--toolbar-fg);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-fg: var(--sidebar-fg);
+  --color-sidebar-muted: var(--sidebar-muted);
+  --color-sidebar-hover: var(--sidebar-hover);
+  --color-sidebar-selected: var(--sidebar-selected);
+  --color-sidebar-selected-fg: var(--sidebar-selected-fg);
+  --color-surface: var(--surface);
+  --color-surface-fg: var(--surface-fg);
+  --color-surface-muted: var(--surface-muted);
+  --color-surface-border: var(--surface-border);
+  --color-surface-hover: var(--surface-hover);
+  --color-pdf: var(--pdf-bg);
+  --color-divider: var(--divider);
+  --color-app: var(--app-bg);
+  --font-mono: "JetBrains Mono", Menlo, Monaco, monospace;
+  --font-sans: "Noto Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  background: var(--app-bg);
+  color: var(--surface-fg);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+input,
+textarea,
+.cm-content,
+pre {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.material-symbols-outlined {
+  font-variation-settings: "FILL" 0, "wght" 400, "GRAD" 0, "opsz" 20;
+}
+
+/* Thin scrollbars like Overleaf's panels. */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--sidebar-muted) 45%, transparent);
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+@keyframes synctex-fade {
+  0%,
+  60% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+.synctex-highlight {
+  position: absolute;
+  background: rgba(54, 108, 191, 0.25);
+  border: 1px solid rgba(54, 108, 191, 0.7);
+  border-radius: 2px;
+  pointer-events: none;
+  animation: synctex-fade 3s ease-out forwards;
+  z-index: 2;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.spin {
+  animation: spin 0.9s linear infinite;
+}
