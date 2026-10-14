@@ -1777,7 +1777,7 @@ checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
 
 [[package]]
 name = "localleaf"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "anyhow",
  "notify",
@@ -3482,7 +3482,7 @@ dependencies = [
 
 [[package]]
 name = "texcraft-core"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "anyhow",
  "regex",

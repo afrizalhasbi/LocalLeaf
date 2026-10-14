@@ -561,12 +561,24 @@ export function updateContent(text: string) {
   }
 }
 
+/**
+ * Contents LocalLeaf itself wrote recently, per file. The file watcher reports our own
+ * autosaves too; matching them here keeps those echoes from looking like external edits.
+ */
+const ownWrites = new Map<string, string[]>();
+function rememberOwnWrite(path: string, content: string) {
+  const list = ownWrites.get(path) ?? [];
+  list.push(content);
+  ownWrites.set(path, list.slice(-8));
+}
+
 export async function save() {
   clearTimeout(saveTimer);
   const path = state.openPath;
   if (!path || state.openKind !== "text" || state.content === state.savedContent) return;
   const content = state.content;
   state.saveState = "saving";
+  rememberOwnWrite(path, content);
   try {
     await ipc.writeFile(path, content);
     if (state.openPath === path) {
@@ -591,6 +603,8 @@ async function onExternalChange(paths: string[]) {
     if (!/\.(tex|bib)$/.test(p) && p !== state.openPath) continue;
     const text = await ipc.readFile(p).catch(() => null);
     if (text === null) continue;
+    // Our own autosave coming back through the watcher: nothing changed externally.
+    if (ownWrites.get(p)?.includes(text)) continue;
     if (/\.(tex|bib)$/.test(p)) state.texts[p] = text;
     if (p === state.openPath && state.openKind === "text" && text !== state.content) {
       if (state.content === state.savedContent) {

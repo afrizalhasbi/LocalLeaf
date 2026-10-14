@@ -18,7 +18,6 @@ import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirro
 import { bracketMatching, indentOnInput, indentUnit } from "@codemirror/language";
 import {
   autocompletion,
-  closeBrackets,
   closeBracketsKeymap,
   completionKeymap,
   snippet,
@@ -28,7 +27,16 @@ import { gotoLine, highlightSelectionMatches, openSearchPanel, searchKeymap } fr
 import { toggleComment } from "@codemirror/commands";
 import { vim } from "@replit/codemirror-vim";
 import { emacs } from "@replit/codemirror-emacs";
-import { editorTheme, latexCompletions, latexLanguage, overleafKeymap, wrapSelection } from "../lib/editor";
+import {
+  editorTheme,
+  latexAutoClose,
+  latexCompletions,
+  latexLanguage,
+  overleafKeymap,
+  reliableDragSelection,
+  tabAcceptsCompletion,
+  wrapSelection,
+} from "../lib/editor";
 import { FONT_FAMILIES, LINE_HEIGHTS, effectiveEditorTheme, isDarkUi, settings } from "../lib/settings";
 import { compile, editorBridge, recentlyRan, save, state, updateContent, type EditorCommand } from "../lib/store";
 
@@ -55,7 +63,7 @@ const keybindingsExt = (): Extension =>
 const wrapExt = (): Extension => (settings.lineWrapping ? EditorView.lineWrapping : []);
 const completeExt = (): Extension =>
   settings.autoComplete ? autocompletion({ override: [latexCompletions], icons: false }) : [];
-const bracketsExt = (): Extension => (settings.autoCloseBrackets ? closeBrackets() : []);
+const bracketsExt = (): Extension => (settings.autoCloseBrackets ? latexAutoClose() : []);
 const activeLineExt = (): Extension => (settings.highlightActiveLine ? [highlightActiveLine(), highlightActiveLineGutter()] : []);
 
 // Briefly highlights the line we jumped to (SyncTeX, log entries, outline).
@@ -79,6 +87,8 @@ function extensions(): Extension[] {
     // Vim/Emacs must win over the default keymaps.
     Prec.highest(keybindingsConf.of(keybindingsExt())),
     Prec.high(keymap.of(overleafKeymap({ compile: () => void compile(), save: () => void save() }))),
+    tabAcceptsCompletion,
+    reliableDragSelection(),
     lineNumbers(),
     highlightSpecialChars(),
     history(),

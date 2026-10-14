@@ -1,6 +1,6 @@
 [package]
 name = "localleaf"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2021"
 description = "LocalLeaf: Overleaf-style local-first LaTeX editor built on texcraft-core"
 license = "MIT"

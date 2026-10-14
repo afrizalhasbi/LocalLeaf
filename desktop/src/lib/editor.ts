@@ -1,9 +1,11 @@
 // CodeMirror 6 configuration for LaTeX: themes, autocompletion and Overleaf shortcuts.
 import { EditorView, keymap, type KeyBinding } from "@codemirror/view";
-import { EditorSelection, type Extension } from "@codemirror/state";
+import { EditorSelection, Prec, type Extension } from "@codemirror/state";
 import { HighlightStyle, StreamLanguage, syntaxHighlighting } from "@codemirror/language";
 import { stex } from "@codemirror/legacy-modes/mode/stex";
 import {
+  acceptCompletion,
+  closeBrackets,
   snippetCompletion,
   type Completion,
   type CompletionContext,
@@ -199,6 +201,127 @@ function relativeFiles(pattern: RegExp, stripExt: boolean): Completion[] {
       if (stripExt) rel = rel.replace(/\.[^.]+$/, "");
       return { label: rel, type: "text" };
     });
+}
+
+// ---------------------------------------------------------------------------
+// Auto-closing pairs
+// ---------------------------------------------------------------------------
+
+const PAIRS: Record<string, string> = { "(": ")", "[": "]", "{": "}", "$": "$" };
+const CLOSERS = new Set([")", "]", "}", "$"]);
+
+/** `\[`, `\(`, `\{`: a single (not doubled) backslash before the bracket. */
+function escapedAt(doc: string, pos: number): boolean {
+  let n = 0;
+  while (pos - 1 - n >= 0 && doc[pos - 1 - n] === "\\") n++;
+  return n % 2 === 1;
+}
+
+/**
+ * Always closes LaTeX pairs, whatever follows the cursor: ( [ { $ and the
+ * math delimiters \[ \] and \( \). Typing a closer in front of the same closer
+ * steps over it, a selection gets wrapped, and Backspace inside an empty pair
+ * deletes both halves. Quotes are left alone (LaTeX uses `` and '').
+ */
+export function latexAutoClose(): Extension {
+  const input = EditorView.inputHandler.of((view, from, to, text) => {
+    if (view.composing || view.state.readOnly || text.length !== 1 || view.state.selection.ranges.length > 1) return false;
+    const { state } = view;
+    const next = state.sliceDoc(to, to + 1);
+    if (CLOSERS.has(text) && from === to && next === text) {
+      view.dispatch({ selection: { anchor: to + 1 }, userEvent: "input.type" });
+      return true;
+    }
+    const close = PAIRS[text];
+    if (!close) return false;
+    const escaped = escapedAt(state.sliceDoc(Math.max(0, from - 8), from), Math.min(from, 8));
+    if (text === "$" && escaped) return false; // \$ is a literal dollar
+    const closing = escaped ? `\\${close}` : close;
+    const selected = state.sliceDoc(from, to);
+    view.dispatch({
+      changes: { from, to, insert: text + selected + closing },
+      selection: selected
+        ? EditorSelection.range(from + 1, from + 1 + selected.length)
+        : EditorSelection.cursor(from + 1),
+      userEvent: "input.type",
+      scrollIntoView: true,
+    });
+    return true;
+  });
+
+  const deletePair = keymap.of([
+    {
+      key: "Backspace",
+      run: (view) => {
+        const { main } = view.state.selection;
+        if (!main.empty || view.state.selection.ranges.length > 1) return false;
+        const pos = main.head;
+        const around = view.state.sliceDoc(Math.max(0, pos - 2), pos + 2);
+        const pairs = ["\\[\\]", "\\(\\)", "\\{\\}"];
+        if (pos >= 2 && pairs.includes(around)) {
+          view.dispatch({ changes: { from: pos - 2, to: pos + 2 }, userEvent: "delete.backward" });
+          return true;
+        }
+        const one = view.state.sliceDoc(pos - 1, pos + 1);
+        if (["()", "[]", "{}", "$$"].includes(one)) {
+          view.dispatch({ changes: { from: pos - 1, to: pos + 1 }, userEvent: "delete.backward" });
+          return true;
+        }
+        return false;
+      },
+    },
+  ]);
+
+  return [Prec.high(input), Prec.high(deletePair), closeBrackets()];
+}
+
+/** Tab accepts the highlighted suggestion (Enter still works too). */
+export const tabAcceptsCompletion = Prec.highest(keymap.of([{ key: "Tab", run: acceptCompletion }]));
+
+// ---------------------------------------------------------------------------
+// Mouse drag selection that does not trust MouseEvent.buttons
+// ---------------------------------------------------------------------------
+
+/**
+ * CodeMirror ends a mouse selection as soon as a mousemove reports `buttons == 0`.
+ * In macOS WKWebView that happens during real drags (e.g. trackpad tap-to-drag or
+ * three-finger drag), so dragging only moved the cursor. This tracks the button
+ * ourselves, from mousedown to mouseup, and extends the selection while it moves.
+ */
+export function reliableDragSelection(): Extension {
+  return EditorView.domEventHandlers({
+    mousedown(event, view) {
+      if (event.button !== 0 || event.detail > 1 || event.altKey || event.metaKey || event.ctrlKey) return false;
+      const start = view.posAtCoords({ x: event.clientX, y: event.clientY });
+      if (start == null) return false;
+      const { main } = view.state.selection;
+      // Pressing inside the selection may start a text drag: leave that to CodeMirror.
+      if (!main.empty && start > main.from && start < main.to && !event.shiftKey) return false;
+      const anchor = event.shiftKey ? main.anchor : start;
+      const x0 = event.clientX;
+      const y0 = event.clientY;
+      let moved = false;
+
+      const move = (e: MouseEvent) => {
+        if (!moved && Math.abs(e.clientX - x0) + Math.abs(e.clientY - y0) < 4) return;
+        moved = true;
+        const head = view.posAtCoords({ x: e.clientX, y: e.clientY }, false);
+        const sel = view.state.selection.main;
+        if (sel.anchor !== anchor || sel.head !== head) {
+          view.dispatch({ selection: { anchor, head }, scrollIntoView: true, userEvent: "select.pointer" });
+        }
+      };
+      const up = () => {
+        document.removeEventListener("mousemove", move, true);
+        document.removeEventListener("mouseup", up, true);
+        window.removeEventListener("blur", up);
+      };
+      document.addEventListener("mousemove", move, true);
+      document.addEventListener("mouseup", up, true);
+      window.addEventListener("blur", up);
+      return false; // CodeMirror still handles the click itself (cursor, focus).
+    },
+  });
 }
 
 // ---------------------------------------------------------------------------

@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.0.1 — 2026-10-14
+
+### Fixed
+- Typing no longer triggers a false "changed on disk while you were editing" warning: LocalLeaf's own autosaves are no longer mistaken for external edits.
+- Selecting text by dragging with the mouse or trackpad works on macOS (the selection was cancelled because WebKit reported no pressed button during the drag).
+- <kbd>Tab</kbd> accepts the highlighted autocompletion suggestion.
+- PDF viewer: fixed an error when the viewer was closed right after a resize.
+
+### Changed
+- Brackets always auto-close, whatever follows the cursor: `(`, `[`, `{`, `$`, and the math delimiters `\[ \]` and `\( \)`. Typing a closer in front of the same closer steps over it, a selection is wrapped, and <kbd>Backspace</kbd> inside an empty pair removes both halves. `\$` stays a literal dollar and quotes are no longer paired.
+
 ## 1.0.0 — 2026-10-13
 
 First public release.

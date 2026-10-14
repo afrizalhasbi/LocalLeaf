@@ -1,6 +1,6 @@
 [package]
 name = "texcraft-core"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2021"
 description = "Native Rust, local-first, agent-ready LaTeX build core with a built-in MCP server"
 license = "MIT"

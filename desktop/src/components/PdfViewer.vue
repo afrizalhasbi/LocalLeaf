@@ -66,7 +66,8 @@ async function load(data: Uint8Array) {
   loading.value = true;
   loadError.value = null;
   // Keep the reader's place across recompiles, like Overleaf.
-  const sc = scroller.value!;
+  const sc = scroller.value;
+  if (!sc) return;
   const anchor = slots.length ? { page: currentPage, offset: offsetWithinPage(currentPage) } : null;
   try {
     const task = pdfjs.getDocument({ data: data.slice() });
@@ -160,8 +161,8 @@ function pageTop(page: number): number {
 }
 
 function offsetWithinPage(page: number): number {
-  const sc = scroller.value!;
-  return (sc.scrollTop - pageTop(page)) / scale;
+  const sc = scroller.value;
+  return sc ? (sc.scrollTop - pageTop(page)) / scale : 0;
 }
 
 function scheduleRender() {
@@ -234,7 +235,8 @@ async function renderPage(index: number) {
 }
 
 function setScale(next: number, nextMode: ZoomMode) {
-  const sc = scroller.value!;
+  const sc = scroller.value;
+  if (!sc) return; // unmounted (e.g. a resize timer firing after the project closed)
   const page = currentPage;
   const offset = offsetWithinPage(page);
   mode = nextMode;
@@ -330,6 +332,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  clearTimeout(resizeTimer);
   resizeObserver?.disconnect();
   loadToken++;
   slots.forEach((s) => s.task?.cancel());

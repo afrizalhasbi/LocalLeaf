@@ -32,6 +32,8 @@ function tree(dir = root) {
 }
 
 let failCompile = false;
+// Files saved by the app during the test (the real project folder is never modified).
+const written = new Map();
 let lastMenuSync = null;
 const errors = [];
 
@@ -53,9 +55,12 @@ const handlers = {
     { engine: "lualatex", installed: false, path: null },
   ],
   synctex_available: () => true,
-  read_project_file: ({ path: p }) => fs.readFileSync(path.join(root, p), "utf8"),
+  read_project_file: ({ path: p }) => written.get(p) ?? fs.readFileSync(path.join(root, p), "utf8"),
   read_binary_file: ({ path: p }) => ({ __bytes: [...fs.readFileSync(path.join(root, p))] }),
-  write_project_file: () => null,
+  write_project_file: ({ path: p, content }) => {
+    written.set(p, content);
+    return null;
+  },
   compile_tex: ({ engine }) => ({
     engine,
     success: !failCompile,
@@ -141,6 +146,62 @@ const shot = async (name) => {
 await page.goto(url);
 await page.waitForSelector(".pdf-page canvas", { timeout: 20000 });
 await shot("1-editor-dark");
+
+// --- Editor behaviour regressions -------------------------------------------
+const activeLine = () => page.locator(".cm-activeLine").innerText();
+const newLine = async (text) => {
+  await page.click(".cm-content");
+  await page.keyboard.press("Meta+ArrowDown");
+  await page.keyboard.press("Enter");
+  if (text) await page.keyboard.type(text);
+};
+const expectLine = async (label, expected) => {
+  const got = (await activeLine()).trim();
+  if (got !== expected) throw new Error(`${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(got)}`);
+  console.log(`ok  ${label}: ${got}`);
+};
+for (const [typed, expected] of [["(", "()"], ["[", "[]"], ["{", "{}"], ["$", "$$"], ["\\[", "\\[\\]"], ["\\(", "\\(\\)"], ["a (b", "a (b)"], ["\\$", "\\$"]]) {
+  await newLine(typed);
+  await expectLine(`auto-close ${typed}`, expected);
+  await page.keyboard.press("Meta+Shift+ArrowLeft");
+  await page.keyboard.press("Backspace");
+}
+await newLine("$x");
+await page.keyboard.type("$ ok");
+await expectLine("typing the closer steps over it", "$x$ ok");
+await newLine("\\[");
+await page.keyboard.press("Backspace");
+await expectLine("Backspace removes an empty \\[ \\] pair", "");
+await newLine("\\secti");
+await page.waitForSelector(".cm-tooltip-autocomplete");
+await page.keyboard.press("Tab");
+await page.waitForTimeout(100);
+if (!(await activeLine()).includes("\\section{")) throw new Error("Tab did not accept the completion: " + (await activeLine()));
+console.log("ok  Tab accepts completion:", (await activeLine()).trim());
+await page.keyboard.press("Escape");
+
+// Mouse drag selects text.
+const textLine = page.locator(".cm-line").nth(2);
+const lb = await textLine.boundingBox();
+await page.mouse.move(lb.x + 4, lb.y + lb.height / 2);
+await page.mouse.down();
+await page.mouse.move(lb.x + 160, lb.y + lb.height / 2, { steps: 6 });
+await page.mouse.up();
+if (!(await page.locator(".cm-selectionBackground").count())) throw new Error("mouse drag did not select text");
+console.log("ok  mouse drag selects text");
+
+// Our own autosave echoed by the file watcher must not look like an external edit.
+await newLine("autosaved text");
+await page.waitForTimeout(1000); // autosave fires after 600 ms
+await page.keyboard.type(" and more typing");
+await page.evaluate(() => window.__emit("project://changed", { paths: ["main.tex"] }));
+await page.waitForTimeout(800);
+if (await page.locator("text=changed on disk").count()) throw new Error("own autosave reported as an external change");
+console.log("ok  autosave echo ignored");
+// A real external edit is still picked up.
+written.set("main.tex", (written.get("main.tex") ?? "") + "\n% edited by an agent\n");
+await page.waitForTimeout(800); // let pending autosaves settle first
+
 
 // SyncTeX forward: put the cursor somewhere and click the → arrow.
 await page.click(".cm-content");
