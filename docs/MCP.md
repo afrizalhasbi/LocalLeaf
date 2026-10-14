@@ -17,7 +17,9 @@ Both behave the same way. Using the app's executable means nothing extra to inst
 | Linux (`.deb`/`.rpm`) | `/usr/bin/localleaf` |
 | Windows | `localleaf.exe` in the folder chosen during installation |
 
-`--root` defaults to the current working directory. Every path an agent passes is resolved inside that folder; anything that escapes it (`..`, absolute paths elsewhere, symlinks pointing outside) is rejected.
+`--root` defaults to the current working directory. Every path an agent passes is resolved inside that folder; anything that escapes it (`..`, absolute paths elsewhere, symlinks pointing outside) is rejected, and files inside `.git/` can be neither read nor written (git configuration and hooks can run commands).
+
+Both servers recover your login-shell `PATH` at startup, so TeX is found even when a GUI client (such as Claude Desktop) launches them with a minimal environment.
 
 ## Client setup
 
@@ -61,8 +63,9 @@ Any MCP client that launches stdio servers works the same way.
 
 The server and the app share the project folder, so you can keep the project open while an agent works on it:
 
-- Files written with `write_project_file` appear in the editor immediately. If you have unsaved edits in the same file, your version is kept and LocalLeaf warns you.
-- `compile_tex` writes to the same `.texcraft/build/` folder the app uses, and the open app reloads the PDF when the agent recompiles.
+- Files written with `write_project_file` appear in the editor immediately. If you have unsaved edits in the same file, LocalLeaf pauses autosave and asks which version to keep.
+- The agent and the app share the project's settings (`.texcraft/settings.json`): `compile_tex` without arguments builds the same main document with the same engine you picked in LocalLeaf.
+- `compile_tex` writes to the same `.texcraft/build/` folder the app uses, and the open app reloads the PDF when the agent recompiles. Compilations of the app and of agents never overlap: they take turns on a lock in the build folder.
 
 ## Tools
 
@@ -87,8 +90,8 @@ Compiles a document with a local engine, running `bibtex`/`biber` and extra LaTe
 
 | Argument | Type | Default | Description |
 |---|---|---|---|
-| `entry_point` | string | required | Main `.tex` file, relative to the project root (e.g. `"main.tex"`). |
-| `engine` | `"pdflatex"` \| `"xelatex"` \| `"lualatex"` \| `"tectonic"` | first installed | Engine to use. |
+| `entry_point` | string | main document | Main `.tex` file, relative to the project root (e.g. `"main.tex"`). By default the project's main document: the one set in LocalLeaf, else the root `.tex` file with `\documentclass` (preferring `main.tex`). |
+| `engine` | `"pdflatex"` \| `"xelatex"` \| `"lualatex"` \| `"tectonic"` | see below | Engine to use. By default the engine chosen for the project in LocalLeaf; if none, the one the preamble needs (`fontspec`, `\babelfont` → XeLaTeX; LuaTeX-only features → LuaLaTeX), otherwise the first installed of pdfLaTeX, XeLaTeX, LuaLaTeX, Tectonic. |
 | `output_dir` | string | `".texcraft/build"` | Output folder, relative to the project root. |
 | `stop_on_first_error` | boolean | `false` | Halt at the first error. By default, as on Overleaf, compilation continues and a PDF is produced whenever possible. |
 | `draft` | boolean | `false` | Fast draft mode: images become placeholders (LaTeX engines). |
@@ -107,21 +110,21 @@ The result is returned as JSON text. `isError` is `true` when the compilation di
   "errors": [
     {
       "kind": "error",
-      "file": "./main.tex",
+      "file": "main.tex",
       "line": 1778,
       "message": "Package luatex.def Error: File `figure.png' not found: using draft setting."
     }
   ],
   "warnings": [
-    { "kind": "warning", "file": null, "line": 299, "message": "Reference `eq:f' on page 3 undefined on input line 299." },
-    { "kind": "bad_box", "file": null, "line": 42, "message": "Overfull \\hbox (4.2pt too wide) in paragraph at lines 42--44" }
+    { "kind": "warning", "file": "main.tex", "line": 299, "message": "Reference `eq:f' on page 3 undefined on input line 299." },
+    { "kind": "bad_box", "file": "main.tex", "line": 42, "message": "Overfull \\hbox (4.2pt too wide) in paragraph at lines 42--44" }
   ],
   "stdout": "…last 16,000 characters of the engine output…",
   "stderr": ""
 }
 ```
 
-A `pdf_path` with `success: false` means the PDF was produced despite non-fatal errors.
+A `pdf_path` with `success: false` means the PDF was produced despite non-fatal errors. Every `file` is a path in the project (TeX's own paths, like `./chapters/intro.tex`, are resolved); diagnostics TeX does not attribute to a file point at the main document.
 
 ### `read_project_file`
 
@@ -153,14 +156,14 @@ Creates or overwrites a UTF-8 text file. The write is atomic (temporary file and
 - Transport: newline-delimited JSON-RPC 2.0 on stdin/stdout. Logs go to stderr (`RUST_LOG=debug` for more).
 - Methods: `initialize`, `ping`, `tools/list`, `tools/call`; notifications are accepted and ignored.
 - Protocol versions: `2025-06-18`, `2025-03-26`, `2024-11-05` (the client's version is echoed when supported).
-- Requests are handled concurrently, so a long compilation does not block other calls.
-- A single compilation is limited to 5 minutes.
+- `compile_tex` runs in the background, so a long compilation does not block other calls; all other requests are handled in the order they arrive (a read that follows a write sees it).
+- Each TeX, BibTeX or Biber run is limited to 5 minutes; a compilation can involve several runs (bibliography plus up to three extra LaTeX passes).
 
 Quick manual test:
 
 ```sh
 printf '%s\n' \
   '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}' \
-  '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"compile_tex","arguments":{"entry_point":"main.tex"}}}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"compile_tex","arguments":{}}}' \
   | texcraft-core --mcp --root ~/Documents/thesis
 ```

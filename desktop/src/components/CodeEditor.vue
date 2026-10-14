@@ -49,6 +49,7 @@ const wrapConf = new Compartment();
 const completeConf = new Compartment();
 const bracketsConf = new Compartment();
 const activeLineConf = new Compartment();
+const spellConf = new Compartment();
 
 function themeExt(): Extension {
   return editorTheme(
@@ -64,6 +65,8 @@ const wrapExt = (): Extension => (settings.lineWrapping ? EditorView.lineWrappin
 const completeExt = (): Extension =>
   settings.autoComplete ? autocompletion({ override: [latexCompletions], icons: false }) : [];
 const bracketsExt = (): Extension => (settings.autoCloseBrackets ? latexAutoClose() : []);
+const spellExt = (): Extension =>
+  EditorView.contentAttributes.of({ spellcheck: settings.spellCheck ? "true" : "false", autocorrect: "off", autocapitalize: "off" });
 const activeLineExt = (): Extension => (settings.highlightActiveLine ? [highlightActiveLine(), highlightActiveLineGutter()] : []);
 
 // Briefly highlights the line we jumped to (SyncTeX, log entries, outline).
@@ -109,7 +112,7 @@ function extensions(): Extension[] {
     wrapConf.of(wrapExt()),
     themeConf.of(themeExt()),
     keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...historyKeymap, ...completionKeymap, indentWithTab]),
-    EditorView.contentAttributes.of({ spellcheck: "true", autocorrect: "off", autocapitalize: "off" }),
+    spellConf.of(spellExt()),
     EditorView.updateListener.of((u) => {
       if (u.docChanged) updateContent(u.state.doc.toString());
       if (u.selectionSet || u.docChanged) {
@@ -211,6 +214,7 @@ watch(() => settings.lineWrapping, () => reconfigure(wrapConf, wrapExt));
 watch(() => settings.autoComplete, () => reconfigure(completeConf, completeExt));
 watch(() => settings.autoCloseBrackets, () => reconfigure(bracketsConf, bracketsExt));
 watch(() => settings.highlightActiveLine, () => reconfigure(activeLineConf, activeLineExt));
+watch(() => settings.spellCheck, () => reconfigure(spellConf, spellExt));
 </script>
 
 <template>

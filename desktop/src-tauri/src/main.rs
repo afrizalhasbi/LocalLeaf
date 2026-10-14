@@ -19,9 +19,9 @@ use std::time::{Duration, Instant};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use texcraft_core::compiler::{self, CompileOptions, TeXEngine};
-use texcraft_core::project::{FileNode, Project};
+use texcraft_core::project::{FileNode, Project, ProjectSettings};
 use texcraft_core::{synctex, DEFAULT_OUTPUT_DIR};
 
 pub(crate) type CmdResult<T> = Result<T, String>;
@@ -41,6 +41,8 @@ struct OpenProject {
 
 #[derive(Default)]
 pub(crate) struct AppState {
+    /// Set once the UI has saved everything and allowed the app to quit.
+    exit_allowed: AtomicBool,
     open: RwLock<Option<OpenProject>>,
     compile_lock: tokio::sync::Mutex<()>,
     compiling: Arc<AtomicBool>,
@@ -68,6 +70,8 @@ struct ProjectInfo {
     root: String,
     name: String,
     main_document: Option<String>,
+    /// Saved per-project settings (`.texcraft/settings.json`), if any.
+    settings: Option<ProjectSettings>,
     tree: Vec<FileNode>,
     /// Command line an MCP client can use to drive this project.
     mcp_command: Vec<String>,
@@ -97,9 +101,15 @@ struct ImportSource {
 // Project lifecycle
 // ---------------------------------------------------------------------------
 
-#[tauri::command]
-fn open_project(app: AppHandle, state: State<'_, AppState>, path: String) -> CmdResult<ProjectInfo> {
-    let project = Project::open(&path).map_err(anyhow_err)?;
+/// Opens a project: scans it off the UI thread and starts watching it.
+async fn open_project_at(app: AppHandle, state: &AppState, path: PathBuf) -> CmdResult<ProjectInfo> {
+    let (project, info) = tokio::task::spawn_blocking(move || -> CmdResult<(Project, ProjectInfo)> {
+        let project = Project::open(&path).map_err(anyhow_err)?;
+        let info = project_info(&project)?;
+        Ok((project, info))
+    })
+    .await
+    .map_err(err)??;
     let watcher = match start_watcher(app, project.root().to_path_buf(), state.compiling.clone()) {
         Ok(w) => Some(w),
         Err(e) => {
@@ -107,35 +117,62 @@ fn open_project(app: AppHandle, state: State<'_, AppState>, path: String) -> Cmd
             None
         }
     };
-    let info = project_info(&project)?;
     *state.open.write().map_err(err)? = Some(OpenProject { project, _watcher: watcher });
     Ok(info)
 }
 
 #[tauri::command]
-fn create_project(
+async fn open_project(app: AppHandle, state: State<'_, AppState>, path: String) -> CmdResult<ProjectInfo> {
+    open_project_at(app, &state, PathBuf::from(path)).await
+}
+
+#[tauri::command]
+async fn create_project(
     app: AppHandle,
     state: State<'_, AppState>,
     parent: String,
     name: String,
 ) -> CmdResult<ProjectInfo> {
-    let name = name.trim();
-    if name.is_empty() || name.contains(['/', '\\']) || name.starts_with('.') {
+    let name = name.trim().to_string();
+    if name.is_empty() || name.contains(['/', '\\', ':']) || name.starts_with('.') {
         return Err("invalid project name".into());
     }
-    let dir = Path::new(&parent).join(name);
+    let dir = Path::new(&parent).join(&name);
     if dir.exists() {
         return Err(format!("{} already exists", dir.display()));
     }
-    std::fs::create_dir_all(&dir).map_err(err)?;
+    tokio::fs::create_dir_all(&dir).await.map_err(err)?;
     let title = name.replace(['\\', '{', '}', '%', '#', '&', '$', '_', '^', '~'], " ");
     let template = format!(
-        "\\documentclass{{article}}\n\\usepackage[utf8]{{inputenc}}\n\\usepackage{{graphicx}}\n\n\
+        "\\documentclass{{article}}\n\\usepackage{{graphicx}}\n\n\
          \\title{{{title}}}\n\\author{{}}\n\\date{{\\today}}\n\n\\begin{{document}}\n\n\\maketitle\n\n\
          \\section{{Introduction}}\n\nYour text here.\n\n\\end{{document}}\n"
     );
-    std::fs::write(dir.join("main.tex"), template).map_err(err)?;
-    open_project(app, state, dir.to_string_lossy().into_owned())
+    tokio::fs::write(dir.join("main.tex"), template).await.map_err(err)?;
+    open_project_at(app, &state, dir).await
+}
+
+/// Renames the folder of the open project (and reopens it at the new path).
+#[tauri::command]
+async fn rename_open_project(app: AppHandle, state: State<'_, AppState>, new_name: String) -> CmdResult<ProjectInfo> {
+    if state.compiling.load(Ordering::SeqCst) {
+        return Err("wait for the compilation to finish before renaming the project".into());
+    }
+    let old_root = state.project()?.root().to_path_buf();
+    // Stop watching before the folder moves.
+    *state.open.write().map_err(err)? = None;
+    let from = old_root.clone();
+    let renamed = tokio::task::spawn_blocking(move || projects::rename_dir(&from, &new_name))
+        .await
+        .map_err(err)?;
+    match renamed {
+        Ok(new_root) => open_project_at(app, &state, PathBuf::from(new_root)).await,
+        Err(e) => {
+            // Leave the project open where it was.
+            let _ = open_project_at(app, &state, old_root).await;
+            Err(e)
+        }
+    }
 }
 
 #[tauri::command]
@@ -145,8 +182,16 @@ fn close_project(state: State<'_, AppState>) -> CmdResult<()> {
 }
 
 #[tauri::command]
-fn get_tree(state: State<'_, AppState>) -> CmdResult<Vec<FileNode>> {
-    state.project()?.tree(&[]).map_err(anyhow_err)
+async fn get_tree(state: State<'_, AppState>) -> CmdResult<Vec<FileNode>> {
+    let project = state.project()?;
+    tokio::task::spawn_blocking(move || project.tree(&[]).map_err(anyhow_err))
+        .await
+        .map_err(err)?
+}
+
+#[tauri::command]
+async fn save_project_settings(state: State<'_, AppState>, settings: ProjectSettings) -> CmdResult<()> {
+    state.project()?.save_settings(&settings).await.map_err(anyhow_err)
 }
 
 fn project_info(project: &Project) -> CmdResult<ProjectInfo> {
@@ -160,7 +205,8 @@ fn project_info(project: &Project) -> CmdResult<ProjectInfo> {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "Project".into()),
-        main_document: project.guess_main_document(),
+        main_document: project.main_document(),
+        settings: project.load_settings(),
         tree: project.tree(&[]).map_err(anyhow_err)?,
         mcp_command: vec![exe, "--mcp".into(), "--root".into(), root.to_string_lossy().into_owned()],
     })
@@ -207,11 +253,13 @@ async fn delete_path(state: State<'_, AppState>, path: String) -> CmdResult<()> 
 }
 
 /// Copies files chosen by the user (dialog or drag & drop) into `target_dir`.
+/// Existing files are only replaced when `overwrite` is true (the UI asks first).
 #[tauri::command]
 async fn import_files(
     state: State<'_, AppState>,
     target_dir: String,
     sources: Vec<ImportSource>,
+    overwrite: Option<bool>,
 ) -> CmdResult<Vec<String>> {
     let project = state.project()?;
     let mut imported = Vec::new();
@@ -226,6 +274,9 @@ async fn import_files(
             return Err(format!("{name} is a folder; only files can be uploaded"));
         }
         let rel = if target_dir.is_empty() { name } else { format!("{target_dir}/{name}") };
+        if !overwrite.unwrap_or(false) && project.resolve(&rel).map_err(anyhow_err)?.exists() {
+            return Err(format!("{rel} already exists"));
+        }
         let bytes = tokio::fs::read(&src_path).await.map_err(err)?;
         project.write(&rel, &bytes).await.map_err(anyhow_err)?;
         imported.push(rel);
@@ -237,7 +288,17 @@ async fn import_files(
 #[tauri::command]
 async fn export_file(state: State<'_, AppState>, path: String, destination: String) -> CmdResult<()> {
     let src = state.project()?.resolve(&path).map_err(anyhow_err)?;
-    tokio::fs::copy(&src, &destination).await.map_err(err)?;
+    let bytes = tokio::fs::read(&src).await.map_err(err)?;
+    // Write only the contents into a brand-new file. `fs::copy` would also carry over
+    // macOS file flags, and build output inside the hidden `.texcraft` folder is flagged
+    // `hidden`, which made exported PDFs invisible in Finder. Removing an existing file
+    // first matters too: overwriting it in place would keep its old flags.
+    match tokio::fs::remove_file(&destination).await {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(err(e)),
+    }
+    tokio::fs::write(&destination, bytes).await.map_err(err)?;
     Ok(())
 }
 
@@ -282,7 +343,7 @@ async fn compile_tex(
     state.compiling.store(false, Ordering::SeqCst);
 
     let payload = match outcome {
-        Ok(result) => relativize_result(&project, &entry, &result),
+        Ok(result) => project.relativize_compilation(&entry, &result),
         Err(e) => {
             let msg = anyhow_err(e);
             let _ = app.emit("compile://failed", json!({ "message": msg }));
@@ -291,34 +352,6 @@ async fn compile_tex(
     };
     let _ = app.emit("compile://finished", &payload);
     Ok(payload)
-}
-
-/// Rewrites every path in a compilation result relative to the project root, so the UI
-/// can open diagnostics directly in the file tree.
-fn relativize_result(project: &Project, entry: &Path, result: &compiler::CompilationResult) -> Value {
-    let mut value = serde_json::to_value(result).unwrap_or(Value::Null);
-    for key in ["pdf_path", "log_path", "synctex_path"] {
-        if let Some(Value::String(p)) = value.get(key) {
-            value[key] = Value::String(project.relative(Path::new(p)));
-        }
-    }
-    let workdir = entry.parent().unwrap_or(project.root());
-    let entry_rel = project.relative(entry);
-    for list in ["errors", "warnings"] {
-        if let Some(Value::Array(items)) = value.get_mut(list) {
-            for item in items {
-                let resolved = item
-                    .get("file")
-                    .and_then(Value::as_str)
-                    .and_then(|f| workdir.join(f).canonicalize().ok())
-                    .filter(|p| p.starts_with(project.root()))
-                    .map(|p| project.relative(&p))
-                    .unwrap_or_else(|| entry_rel.clone());
-                item["file"] = Value::String(resolved);
-            }
-        }
-    }
-    value
 }
 
 #[tauri::command]
@@ -391,9 +424,8 @@ fn synctex_available() -> bool {
     synctex::is_available()
 }
 
-/// Opens the system file manager on a folder (Finder on macOS).
-#[tauri::command]
-fn reveal_in_file_manager(path: String) -> CmdResult<()> {
+/// Opens a folder or URL with the system's default handler (Finder, Explorer, xdg-open).
+fn open_with_system(target: &str) -> CmdResult<()> {
     let opener = if cfg!(target_os = "macos") {
         "open"
     } else if cfg!(windows) {
@@ -401,8 +433,14 @@ fn reveal_in_file_manager(path: String) -> CmdResult<()> {
     } else {
         "xdg-open"
     };
-    std::process::Command::new(opener).arg(&path).spawn().map_err(err)?;
+    std::process::Command::new(opener).arg(target).spawn().map_err(err)?;
     Ok(())
+}
+
+/// Opens the system file manager on a folder (Finder on macOS).
+#[tauri::command]
+fn reveal_in_file_manager(path: String) -> CmdResult<()> {
+    open_with_system(&path)
 }
 
 /// Opens a web page in the default browser (Help menu links).
@@ -411,9 +449,7 @@ fn open_external(url: String) -> CmdResult<()> {
     if !url.starts_with("https://") {
         return Err("only https links can be opened".into());
     }
-    let opener = if cfg!(target_os = "macos") { "open" } else if cfg!(windows) { "explorer" } else { "xdg-open" };
-    std::process::Command::new(opener).arg(&url).spawn().map_err(err)?;
-    Ok(())
+    open_with_system(&url)
 }
 
 /// Project folder passed on the command line (`LocalLeaf path/to/project`), if any.
@@ -424,6 +460,14 @@ fn initial_project() -> Option<String> {
         .find(|a| !a.starts_with('-') && Path::new(a).is_dir())
         .and_then(|a| std::fs::canonicalize(a).ok())
         .map(|p| p.to_string_lossy().into_owned())
+}
+
+/// Called by the UI after it has flushed pending saves in response to `app://exit-requested`.
+#[tauri::command]
+fn confirm_exit(app: AppHandle, state: State<'_, AppState>) {
+    tracing::info!("pending edits saved, exiting");
+    state.exit_allowed.store(true, Ordering::SeqCst);
+    app.exit(0);
 }
 
 /// Surfaces webview errors in the terminal, where `tauri dev` users look first.
@@ -471,9 +515,11 @@ fn start_watcher(app: AppHandle, root: PathBuf, compiling: Arc<AtomicBool>) -> n
                         continue;
                     }
                     let name = rel.rsplit('/').next().unwrap_or("");
+                    // Compare whole folder names: `.gitignore` and `.github/` are project files.
+                    let top = rel.split('/').next().unwrap_or("");
                     if rel.is_empty()
-                        || rel.starts_with(".git")
-                        || rel.starts_with(".texcraft")
+                        || top == ".git"
+                        || top == ".texcraft"
                         || name == ".DS_Store"
                         || name.ends_with(".texcraft-tmp")
                     {
@@ -497,47 +543,6 @@ fn start_watcher(app: AppHandle, root: PathBuf, compiling: Arc<AtomicBool>) -> n
 // Startup
 // ---------------------------------------------------------------------------
 
-/// Apps launched from Finder/Dock get a minimal PATH that lacks TeX. Recover the user's
-/// login-shell PATH and add the usual TeX/Homebrew locations so engines are found.
-fn fix_path_env() {
-    let mut paths: Vec<PathBuf> = std::env::var_os("PATH")
-        .map(|p| std::env::split_paths(&p).collect())
-        .unwrap_or_default();
-
-    #[cfg(unix)]
-    if let Ok(shell) = std::env::var("SHELL") {
-        if let Ok(out) = std::process::Command::new(shell)
-            .args(["-lc", "printf '%s' \"$PATH\""])
-            .stdin(std::process::Stdio::null())
-            .output()
-        {
-            let shell_path = String::from_utf8_lossy(&out.stdout);
-            if let Some(last) = shell_path.lines().last() {
-                paths.extend(std::env::split_paths(last));
-            }
-        }
-    }
-
-    let mut extra = vec![
-        PathBuf::from("/Library/TeX/texbin"),
-        PathBuf::from("/opt/homebrew/bin"),
-        PathBuf::from("/usr/local/bin"),
-        PathBuf::from("/usr/bin"),
-        PathBuf::from("/bin"),
-    ];
-    if let Some(home) = std::env::var_os("HOME") {
-        extra.push(PathBuf::from(&home).join(".cargo/bin"));
-        extra.push(PathBuf::from(&home).join("bin"));
-    }
-    paths.extend(extra);
-
-    let mut seen = BTreeSet::new();
-    paths.retain(|p| seen.insert(p.clone()));
-    if let Ok(joined) = std::env::join_paths(paths) {
-        std::env::set_var("PATH", joined);
-    }
-}
-
 fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -547,7 +552,7 @@ fn main() {
         .with_writer(std::io::stderr)
         .with_ansi(false)
         .init();
-    fix_path_env();
+    texcraft_core::env::fix_path();
 
     // `LocalLeaf --mcp [--root DIR]` runs the headless MCP server instead of the GUI.
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -579,6 +584,8 @@ fn main() {
             open_project,
             create_project,
             close_project,
+            rename_open_project,
+            save_project_settings,
             get_tree,
             read_project_file,
             read_binary_file,
@@ -596,6 +603,7 @@ fn main() {
             synctex_inverse,
             synctex_available,
             initial_project,
+            confirm_exit,
             reveal_in_file_manager,
             open_external,
             menu::update_menu_state,
@@ -604,6 +612,24 @@ fn main() {
             projects::trash_project_folder,
             frontend_log,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running LocalLeaf");
+        .build(tauri::generate_context!())
+        .expect("error while building LocalLeaf")
+        .run(|app, event| {
+            // Quitting (⌘Q, Dock → Quit) would drop edits still waiting for autosave: let the
+            // UI save first. It answers with `confirm_exit`; a timeout guards against a hung UI.
+            if let tauri::RunEvent::ExitRequested { api, .. } = event {
+                let state = app.state::<AppState>();
+                if state.exit_allowed.load(Ordering::SeqCst) || app.webview_windows().is_empty() {
+                    return;
+                }
+                api.prevent_exit();
+                let _ = app.emit("app://exit-requested", ());
+                let handle = app.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_secs(3));
+                    handle.state::<AppState>().exit_allowed.store(true, Ordering::SeqCst);
+                    handle.exit(0);
+                });
+            }
+        });
 }

@@ -24,14 +24,15 @@ cd desktop && npm install && npm run app
 
 ```sh
 cargo test --workspace
-cd desktop && npm run typecheck
+cd desktop && npm test && npm run typecheck
 ```
 
-For UI changes, also run the WebKit smoke test against a sample project and look at the screenshots:
+For UI changes, also run the WebKit smoke test and look at the screenshots in `desktop/e2e/screenshots`:
 
 ```sh
 npm run dev &
-node e2e/ui-smoke.mjs <project-folder> <screenshot-folder>
+node e2e/ui-smoke.mjs                          # bundled fixture project
+node e2e/ui-smoke.mjs <project-folder> <out>   # or your own project
 ```
 
 Guidelines:

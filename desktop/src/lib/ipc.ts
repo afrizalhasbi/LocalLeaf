@@ -17,10 +17,21 @@ export interface FileNode {
   children?: FileNode[];
 }
 
+/** Per-project settings, stored in `.texcraft/settings.json` (shared with the MCP server). */
+export interface ProjectSettings {
+  displayName?: string | null;
+  mainDocument?: string | null;
+  engine?: Engine | null;
+  autoCompile?: boolean | null;
+  draft?: boolean | null;
+  stopOnFirstError?: boolean | null;
+}
+
 export interface ProjectInfo {
   root: string;
   name: string;
   mainDocument: string | null;
+  settings: ProjectSettings | null;
   tree: FileNode[];
   mcpCommand: string[];
 }
@@ -71,6 +82,8 @@ export const ipc = {
   openProject: (path: string) => invoke<ProjectInfo>("open_project", { path }),
   createProject: (parent: string, name: string) => invoke<ProjectInfo>("create_project", { parent, name }),
   closeProject: () => invoke<void>("close_project"),
+  renameOpenProject: (newName: string) => invoke<ProjectInfo>("rename_open_project", { newName }),
+  saveProjectSettings: (settings: ProjectSettings) => invoke<void>("save_project_settings", { settings }),
   getTree: () => invoke<FileNode[]>("get_tree"),
 
   readFile: (path: string) => invoke<string>("read_project_file", { path }),
@@ -80,8 +93,8 @@ export const ipc = {
   createFolder: (path: string) => invoke<void>("create_folder", { path }),
   rename: (from: string, to: string) => invoke<void>("rename_path", { from, to }),
   remove: (path: string) => invoke<void>("delete_path", { path }),
-  importFiles: (targetDir: string, paths: string[]) =>
-    invoke<string[]>("import_files", { targetDir, sources: paths.map((path) => ({ path })) }),
+  importFiles: (targetDir: string, paths: string[], overwrite = false) =>
+    invoke<string[]>("import_files", { targetDir, sources: paths.map((path) => ({ path })), overwrite }),
   exportFile: (path: string, destination: string) => invoke<void>("export_file", { path, destination }),
   revealInFileManager: (path: string) => invoke<void>("reveal_in_file_manager", { path }),
   renameProjectFolder: (root: string, newName: string) => invoke<string>("rename_project_folder", { root, newName }),

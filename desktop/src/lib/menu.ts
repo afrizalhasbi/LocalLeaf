@@ -9,6 +9,7 @@ import {
   closeProject,
   compile,
   editorBridge,
+  flushBeforeExit,
   flushSave,
   notify,
   openProject,
@@ -92,6 +93,9 @@ async function handle(id: string) {
   switch (id) {
     case "app.settings":
       return openSettings();
+    case "app.quit":
+      await flushBeforeExit().catch(() => undefined);
+      return invoke("confirm_exit");
     case "file.new_project":
       if (state.info) await closeProject();
       state.ui.newProjectRequested = true;

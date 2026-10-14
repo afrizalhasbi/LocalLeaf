@@ -4,6 +4,7 @@
 //! through a built-in MCP server and to the desktop UI as a Rust library.
 
 pub mod compiler;
+pub mod env;
 pub mod mcp_server;
 pub mod project;
 pub mod synctex;

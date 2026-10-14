@@ -14,7 +14,7 @@ use tokio::sync::mpsc;
 use crate::compiler::{self, CompileOptions, TeXEngine};
 use crate::project::Project;
 
-const SERVER_NAME: &str = "texcraft";
+const SERVER_NAME: &str = "localleaf";
 const LATEST_PROTOCOL_VERSION: &str = "2025-06-18";
 const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
 
@@ -63,14 +63,22 @@ pub async fn run(root: PathBuf) -> Result<()> {
                 continue;
             }
         };
-        // Long-running tools (compilation) must not block other requests such as `ping`.
-        let server = Arc::clone(&server);
-        let tx = tx.clone();
-        tokio::spawn(async move {
-            if let Some(resp) = server.handle_message(msg).await {
-                let _ = tx.send(resp);
-            }
-        });
+        // Compilations run in the background so they never block `ping` or file reads.
+        // Everything else is handled in arrival order, so a read that follows a write
+        // always sees it.
+        let is_compile = msg.get("method").and_then(Value::as_str) == Some("tools/call")
+            && msg.pointer("/params/name").and_then(Value::as_str) == Some("compile_tex");
+        if is_compile {
+            let server = Arc::clone(&server);
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                if let Some(resp) = server.handle_message(msg).await {
+                    let _ = tx.send(resp);
+                }
+            });
+        } else if let Some(resp) = server.handle_message(msg).await {
+            let _ = tx.send(resp);
+        }
     }
 
     drop(tx);
@@ -123,9 +131,10 @@ impl Server {
             "capabilities": { "tools": { "listChanged": false } },
             "serverInfo": { "name": SERVER_NAME, "version": env!("CARGO_PKG_VERSION") },
             "instructions": format!(
-                "texcraft compiles LaTeX projects with the TeX engines installed on this machine. \
-                 Project root: {}. All paths are relative to it. Call list_available_engines first, \
-                 then compile_tex; use read_project_file / write_project_file to inspect and fix sources around reported error lines.",
+                "LocalLeaf compiles LaTeX projects with the TeX engines installed on this machine. \
+                 Project root: {}. All paths are relative to it. compile_tex without arguments builds the \
+                 project's main document with its configured engine; use read_project_file / \
+                 write_project_file to inspect and fix sources around reported error lines.",
                 self.project.root().display()
             ),
         })
@@ -161,7 +170,8 @@ impl Server {
     async fn compile_tex(&self, args: Value) -> Result<ToolOutput> {
         #[derive(Deserialize)]
         struct Args {
-            entry_point: String,
+            #[serde(default)]
+            entry_point: Option<String>,
             #[serde(default)]
             engine: Option<String>,
             #[serde(default)]
@@ -173,14 +183,26 @@ impl Server {
         }
         let args: Args = serde_json::from_value(args).context("invalid arguments for compile_tex")?;
 
-        let engine = match args.engine.as_deref() {
-            Some(name) => name.parse::<TeXEngine>()?,
-            None => compiler::detect_engines()
-                .first()
-                .map(|(e, _)| *e)
-                .ok_or_else(|| anyhow!("no TeX engine installed (looked for tectonic, pdflatex, xelatex, lualatex)"))?,
+        let settings = self.project.load_settings().unwrap_or_default();
+        let entry_rel = match args.entry_point {
+            Some(e) => e,
+            None => self
+                .project
+                .main_document()
+                .context("no entry_point given and no main document found in the project")?,
         };
-        let entry = self.resolve(&args.entry_point)?;
+        let entry = self.resolve(&entry_rel)?;
+        let engine = match (args.engine.as_deref(), settings.engine) {
+            (Some(name), _) => name.parse::<TeXEngine>()?,
+            // The engine chosen in LocalLeaf for this project, if any…
+            (None, Some(engine)) if engine.locate().is_some() => engine,
+            // …else what the preamble needs, else pdfLaTeX first (same rule as the app).
+            _ => {
+                let source = tokio::fs::read_to_string(&entry).await.unwrap_or_default();
+                TeXEngine::default_for(&source)
+                    .ok_or_else(|| anyhow!("no TeX engine installed (looked for pdflatex, xelatex, lualatex, tectonic)"))?
+            }
+        };
         let output_dir = self.resolve(args.output_dir.as_deref().unwrap_or(crate::DEFAULT_OUTPUT_DIR))?;
 
         // Like Overleaf's default, keep going past errors so a PDF is produced whenever possible.
@@ -190,14 +212,8 @@ impl Server {
         result.stderr = tail(&result.stderr, MAX_STREAM_CHARS);
         let success = result.success;
 
-        let mut value = serde_json::to_value(&result)?;
-        // Report paths relative to the project root, as the agent supplied them.
-        for key in ["pdf_path", "log_path", "synctex_path"] {
-            if let Some(Value::String(p)) = value.get(key) {
-                let rel = self.relative(Path::new(p));
-                value[key] = Value::String(rel);
-            }
-        }
+        // Paths relative to the project root, diagnostics pointing at project files.
+        let value = self.project.relativize_compilation(&entry, &result);
         Ok(ToolOutput { value, is_error: !success })
     }
 
@@ -282,13 +298,13 @@ fn tools_list() -> Value {
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "entry_point": { "type": "string", "description": "Main .tex file relative to the project root, e.g. \"main.tex\"." },
-                        "engine": { "type": "string", "enum": engines, "description": "TeX engine to use. Defaults to the first installed one." },
+                        "entry_point": { "type": "string", "description": "Main .tex file relative to the project root, e.g. \"main.tex\". Defaults to the project's main document (as set in LocalLeaf, else the root .tex file with \\documentclass, preferring main.tex)." },
+                        "engine": { "type": "string", "enum": engines, "description": "TeX engine to use. Defaults to the engine chosen for the project in LocalLeaf, else the one the preamble needs (fontspec → xelatex, LuaTeX features → lualatex), else the first installed of pdflatex, xelatex, lualatex, tectonic." },
                         "output_dir": { "type": "string", "description": "Output directory relative to the project root. Defaults to \".texcraft/build\" (shared with the texcraft desktop app)." },
                         "stop_on_first_error": { "type": "boolean", "description": "Halt at the first error instead of producing a PDF despite errors (Overleaf's default is false)." },
                         "draft": { "type": "boolean", "description": "Fast draft mode: images are replaced by placeholders." }
                     },
-                    "required": ["entry_point"]
+                    "required": []
                 }
             },
             {

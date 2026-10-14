@@ -1,12 +1,32 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { parseOutline, type OutlineItem } from "../lib/latex";
 import { gotoLocation, state } from "../lib/store";
 import Icon from "./Icon.vue";
 
-const outline = computed(() =>
-  state.openPath?.endsWith(".tex") && state.openKind === "text" ? parseOutline(state.content) : [],
+// Parsing a long document on every keystroke is wasted work: re-parse shortly after typing
+// stops, and immediately when another file is opened.
+const source = ref("");
+let timer: ReturnType<typeof setTimeout> | undefined;
+const isTex = computed(() => !!state.openPath?.endsWith(".tex") && state.openKind === "text");
+watch(
+  () => state.openPath,
+  () => {
+    clearTimeout(timer);
+    source.value = isTex.value ? state.content : "";
+  },
+  { immediate: true },
 );
+watch(
+  () => state.content,
+  (text) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => (source.value = isTex.value ? text : ""), 200);
+  },
+);
+onBeforeUnmount(() => clearTimeout(timer));
+
+const outline = computed(() => (source.value ? parseOutline(source.value) : []));
 
 interface Row {
   item: OutlineItem;

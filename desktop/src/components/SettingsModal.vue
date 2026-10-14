@@ -9,13 +9,16 @@ import Modal from "./Modal.vue";
 import SettingRow from "./SettingRow.vue";
 import Toggle from "./Toggle.vue";
 
-const tabs = [
-  { id: "editor", label: "Editor", icon: "code" },
-  { id: "compiler", label: "Compiler", icon: "build" },
-  { id: "appearance", label: "Appearance", icon: "palette" },
-  { id: "shortcuts", label: "Shortcuts", icon: "keyboard" },
-  { id: "agent", label: "AI agent (MCP)", icon: "smart_toy" },
+const allTabs = [
+  { id: "editor", label: "Editor", icon: "code", needsProject: false },
+  { id: "compiler", label: "Compiler", icon: "build", needsProject: true },
+  { id: "appearance", label: "Appearance", icon: "palette", needsProject: false },
+  { id: "shortcuts", label: "Shortcuts", icon: "keyboard", needsProject: false },
+  { id: "agent", label: "AI agent (MCP)", icon: "smart_toy", needsProject: true },
 ] as const;
+// Compiler and agent settings belong to a project: hidden on the dashboard.
+const tabs = computed(() => allTabs.filter((t) => !t.needsProject || state.info));
+if (!state.info && allTabs.find((t) => t.id === state.ui.settingsTab)?.needsProject) state.ui.settingsTab = "editor";
 
 const isMac = navigator.platform.toLowerCase().includes("mac");
 const key = (k: string) => (isMac ? k : k.replace(/⌘/g, "Ctrl+").replace(/⇧/g, "Shift+").replace(/⌥/g, "Alt+"));
@@ -85,6 +88,9 @@ async function copy(text: string) {
             <Toggle v-model="settings.lineWrapping" />
           </SettingRow>
           <SettingRow label="Highlight current line"><Toggle v-model="settings.highlightActiveLine" /></SettingRow>
+          <SettingRow label="Spell check" hint="System spell checker; it also underlines LaTeX commands">
+            <Toggle v-model="settings.spellCheck" />
+          </SettingRow>
           <SettingRow label="Keybindings">
             <select v-model="settings.keybindings" class="select">
               <option value="default">None (standard)</option>

@@ -21,10 +21,11 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: desktop/package-lock.json
-      - name: Frontend type check and build
+      - name: Frontend type check, unit tests and build
         working-directory: desktop
         run: |
           npm ci
+          npm test
           npm run build
       - name: Rust tests
         run: cargo test --workspace

@@ -1,5 +1,6 @@
 // Editor preferences (Overleaf's Settings modal), persisted per machine.
 import { reactive, watch } from "vue";
+import { readStored, writeStored } from "./storage";
 
 export type OverallTheme = "dark" | "light" | "system";
 export type EditorThemeId = "overleaf-dark" | "overleaf-light" | "textmate" | "solarized-dark" | "monokai";
@@ -20,6 +21,8 @@ export interface Settings {
   autoComplete: boolean;
   autoCloseBrackets: boolean;
   highlightActiveLine: boolean;
+  /** System spell checker in the editor (it also flags LaTeX commands, hence off by default). */
+  spellCheck: boolean;
 }
 
 const SETTINGS_VERSION = 2;
@@ -36,6 +39,7 @@ const DEFAULTS: Settings = {
   autoComplete: true,
   autoCloseBrackets: true,
   highlightActiveLine: true,
+  spellCheck: false,
 };
 
 export const FONT_FAMILIES: Record<FontFamily, { label: string; css: string }> = {
@@ -52,11 +56,11 @@ export const LINE_HEIGHTS: Record<LineHeight, { label: string; value: number }> 
   wide: { label: "Wide", value: 2 },
 };
 
-const KEY = "texcraft:settings";
+const KEY = "settings";
 
 function load(): Settings {
   try {
-    const raw = localStorage.getItem(KEY);
+    const raw = readStored(KEY);
     if (raw) {
       const parsed = JSON.parse(raw) as Partial<Settings>;
       const saved = { ...DEFAULTS, ...parsed } as Settings;
@@ -77,7 +81,7 @@ watch(
   settings,
   (value) => {
     try {
-      localStorage.setItem(KEY, JSON.stringify(value));
+      writeStored(KEY, JSON.stringify(value));
     } catch {
       /* ignore */
     }

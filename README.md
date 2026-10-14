@@ -33,10 +33,11 @@ Native Rust + Tauri, compiles with the TeX engines already on your computer, and
 | **SyncTeX** | Jump from the cursor to the PDF and back (arrows on the divider, double-click in the PDF, or <kbd>⌥⌘→</kbd>/<kbd>⌥⌘←</kbd>). |
 | **Logs** | Errors, warnings and bad boxes as clickable cards that open the right file at the right line, with hints for common local issues (wrong engine for `fontspec`, missing fonts, files renamed by the OS). |
 | **Compile options** | Engine choice, auto-compile, fast draft mode, stop-on-first-error, recompile from scratch. The engine a preamble needs is detected on first open. |
-| **Projects** | Dashboard with search; per-project menu to open, rename, move (also across disks), reveal in Finder/Explorer, or move to the Trash. |
+| **Projects** | Dashboard with search; per-project menu to open, rename, move (also across disks), reveal in Finder/Explorer, or move to the Trash. Per-project settings (main document, compiler, options) are stored in the project itself. |
 | **Files** | New file/folder, upload (or drag from Finder), rename, delete, drag-and-drop between folders, file outline of `\section`s. |
 | **Menu bar** | Native menus with standard shortcuts: File, Edit, **Insert** (sections, lists, figures, tables, equations, citations…), View (layouts, panels, font size, theme), Project (compile, engine, SyncTeX, word count). |
-| **Local-first** | Autosave to disk, live reload when files change outside the app (another editor, `git pull`, an AI agent), word count, light and dark themes. |
+| **Local-first** | Autosave to disk (also right before quitting), live reload when files change outside the app (another editor, `git pull`, an AI agent), and a prompt instead of a silent overwrite when a file changes on disk while you have unsaved edits. |
+| **Accessibility** | Keyboard-navigable menus and dialogs, light and dark themes, adjustable editor font and size, optional system spell checking. |
 
 <table>
   <tr>
@@ -89,7 +90,7 @@ SyncTeX navigation uses the `synctex` command that ships with TeX Live and MiKTe
 3. Press **Recompile** (<kbd>⌘↵</kbd>, or <kbd>Ctrl+Enter</kbd> on Windows/Linux). Build output goes to a hidden `.texcraft/build/` folder inside the project, so your sources stay clean (add `.texcraft/` to your `.gitignore`).
 4. Click an error in **Logs** to jump to it; use the SyncTeX arrows to move between code and PDF.
 
-The main document is detected automatically (`main.tex`, or the first root file with `\documentclass`); change it with *Project → Set Current File as Main Document* or in *Settings → Compiler*. The full shortcut list is in *Help → Keyboard Shortcuts*.
+The main document is detected automatically (`main.tex`, or the first root file with `\documentclass`); change it with *Project → Set Current File as Main Document* or in *Settings → Compiler*. These per-project choices are saved in `.texcraft/settings.json`, where the MCP server reads them too. The full shortcut list is in *Help → Keyboard Shortcuts*.
 
 <details>
 <summary><b>Keyboard shortcuts</b> (macOS; use Ctrl instead of ⌘ elsewhere)</summary>
@@ -112,7 +113,7 @@ The main document is detected automatically (`main.tex`, or the first root file 
 
 ## AI agents (MCP)
 
-LocalLeaf exposes a project to AI agents through the Model Context Protocol, with four tools: `compile_tex`, `read_project_file`, `write_project_file` and `list_available_engines`. With Claude Code, for example:
+LocalLeaf exposes a project to AI agents through the Model Context Protocol, with four tools: `compile_tex`, `read_project_file`, `write_project_file` and `list_available_engines`. The agent works on the same files and settings as the editor: `compile_tex` with no arguments builds your main document with the compiler you chose, and its compilations take turns with yours. Files inside `.git/` are off limits. With Claude Code, for example:
 
 ```sh
 claude mcp add localleaf -- /Applications/LocalLeaf.app/Contents/MacOS/localleaf --mcp --root ~/Documents/thesis
@@ -146,9 +147,10 @@ npx tauri build --target universal-apple-darwin   # universal macOS build
 
 ```sh
 cargo test --workspace                    # log parser, project sandbox, SyncTeX, folder moves
-cd desktop && npm run typecheck
-npm run dev &                             # UI smoke test in WebKit with screenshots:
-node e2e/ui-smoke.mjs <project-folder> <screenshot-folder>
+cd desktop && npm test                    # LaTeX source analysis
+npm run typecheck
+npm run dev &                             # UI smoke test in WebKit (bundled fixture project),
+node e2e/ui-smoke.mjs                     # screenshots in desktop/e2e/screenshots
 ```
 
 The [release workflow](.github/workflows/release.yml) builds and attaches the macOS, Windows and Linux packages whenever a GitHub release is published.
@@ -171,6 +173,10 @@ LocalLeaf/
 ```
 
 More detail in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+## Roadmap
+
+Planned work, including git versioning in the interface and installing missing LaTeX packages from the logs, is listed in [ROADMAP.md](ROADMAP.md).
 
 ## Limitations
 

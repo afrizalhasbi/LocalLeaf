@@ -6,6 +6,7 @@ import { stex } from "@codemirror/legacy-modes/mode/stex";
 import {
   acceptCompletion,
   closeBrackets,
+  completionStatus,
   snippetCompletion,
   type Completion,
   type CompletionContext,
@@ -275,8 +276,24 @@ export function latexAutoClose(): Extension {
   return [Prec.high(input), Prec.high(deletePair), closeBrackets()];
 }
 
-/** Tab accepts the highlighted suggestion (Enter still works too). */
-export const tabAcceptsCompletion = Prec.highest(keymap.of([{ key: "Tab", run: acceptCompletion }]));
+/**
+ * Tab accepts the highlighted suggestion (Enter still works too). CodeMirror ignores accepts
+ * for a moment right after the list opens (`interactionDelay`, against accidental accepts):
+ * a quick Tab then would fall through and indent instead. While the list is open Tab never
+ * indents; if it is too early, the accept is retried just after the delay.
+ */
+export const tabAcceptsCompletion = Prec.highest(
+  keymap.of([
+    {
+      key: "Tab",
+      run: (view) => {
+        if (completionStatus(view.state) === null) return false;
+        if (!acceptCompletion(view)) setTimeout(() => acceptCompletion(view), 90);
+        return true;
+      },
+    },
+  ]),
+);
 
 // ---------------------------------------------------------------------------
 // Mouse drag selection that does not trust MouseEvent.buttons

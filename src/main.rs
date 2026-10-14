@@ -15,13 +15,13 @@ USAGE:
     texcraft-core --help          Show this help
 
 MCP TOOLS:
-    compile_tex             { entry_point, engine?, output_dir? }
+    compile_tex             { entry_point, engine?, output_dir?, stop_on_first_error?, draft? }
     read_project_file       { path }
     write_project_file      { path, content }
     list_available_engines  {}
 
-Connect an agent with the bundled .mcp.json, or e.g.:
-    claude mcp add texcraft -- /path/to/texcraft-core --mcp
+Connect an agent, e.g. with Claude Code:
+    claude mcp add localleaf -- /path/to/texcraft-core --mcp --root /path/to/project
 
 Logs go to stderr; set RUST_LOG=debug for more detail.";
 
@@ -33,6 +33,8 @@ async fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .with_ansi(false)
         .init();
+    // MCP clients are often GUI apps that launch servers with a minimal PATH.
+    texcraft_core::env::fix_path();
 
     let mut mcp = false;
     let mut root: Option<PathBuf> = None;

@@ -15,7 +15,7 @@ const title = computed(() => `Recompile (${shortcut})`);
 <template>
   <div class="flex items-stretch">
     <button
-      class="flex h-8 items-center gap-1.5 rounded-l-full bg-accent pr-3 pl-3.5 text-[13px] font-semibold text-white transition-colors hover:bg-accent-hover disabled:opacity-80"
+      class="flex h-8 min-w-[8.75rem] items-center justify-center gap-1.5 rounded-l-full bg-accent pr-3 pl-3.5 text-[13px] font-semibold text-white transition-colors hover:bg-accent-hover disabled:opacity-80"
       :title="title"
       @click="compile()"
     >

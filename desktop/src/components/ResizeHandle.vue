@@ -32,6 +32,8 @@ function onPointerDown(e: PointerEvent) {
     class="group relative z-10 flex w-[7px] shrink-0 cursor-col-resize flex-col items-center justify-center bg-toolbar transition-colors hover:bg-accent/40"
     :class="{ 'bg-accent/60': dragging }"
     style="border-left: 1px solid var(--divider); border-right: 1px solid var(--divider)"
+    role="separator"
+    aria-orientation="vertical"
     @pointerdown="onPointerDown"
     @dblclick="emit('toggle')"
   >

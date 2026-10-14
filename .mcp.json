@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "texcraft": {
+    "localleaf": {
       "command": "./target/release/texcraft-core",
       "args": ["--mcp"]
     }

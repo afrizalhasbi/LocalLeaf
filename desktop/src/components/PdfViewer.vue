@@ -76,12 +76,7 @@ async function load(data: Uint8Array) {
       void task.destroy();
       return;
     }
-    const sizes = await Promise.all(
-      Array.from({ length: next.numPages }, async (_, i) => {
-        const vp = (await next.getPage(i + 1)).getViewport({ scale: 1 });
-        return { width: vp.width, height: vp.height };
-      }),
-    );
+    const sizes = await pageSizes(next);
     if (token !== loadToken) {
       void task.destroy();
       return;
@@ -104,7 +99,28 @@ async function load(data: Uint8Array) {
   }
 }
 
-function buildSlots(sizes: { width: number; height: number }[]) {
+type Size = { width: number; height: number };
+
+/**
+ * Page sizes for layout. Recompiles usually keep the page count and size, so the previous
+ * sizes are reused; long new documents assume every page is as large as the first one and
+ * correct the odd page when it is rendered. Short documents are measured exactly.
+ */
+async function pageSizes(next: PDFDocumentProxy): Promise<Size[]> {
+  const vp = (await next.getPage(1)).getViewport({ scale: 1 });
+  const first = { width: vp.width, height: vp.height };
+  const sameAsBefore = slots.length === next.numPages && slots[0]?.width === first.width && slots[0]?.height === first.height;
+  if (sameAsBefore) return slots.map((s) => ({ width: s.width, height: s.height }));
+  if (next.numPages > 40) return Array.from({ length: next.numPages }, () => ({ ...first }));
+  return Promise.all(
+    Array.from({ length: next.numPages }, async (_, i) => {
+      const v = (await next.getPage(i + 1)).getViewport({ scale: 1 });
+      return { width: v.width, height: v.height };
+    }),
+  );
+}
+
+function buildSlots(sizes: Size[]) {
   slots.forEach((s) => {
     s.task?.cancel();
     s.textLayer?.cancel();
@@ -174,19 +190,61 @@ function scheduleRender() {
   });
 }
 
+/** Pages to render next, nearest to the reader first; processed one at a time. */
+let renderQueue: number[] = [];
+let rendering = false;
+
 function renderVisible() {
   const sc = scroller.value;
   if (!sc || !doc) return;
-  const top = sc.scrollTop - sc.clientHeight;
-  const bottom = sc.scrollTop + sc.clientHeight * 2;
+  const keepTop = sc.scrollTop - sc.clientHeight;
+  const keepBottom = sc.scrollTop + sc.clientHeight * 2;
+  // Beyond this distance a rendered page is dropped (its image, not its place in the layout):
+  // long documents would otherwise keep every page they ever showed in memory.
+  const dropTop = sc.scrollTop - sc.clientHeight * 4;
+  const dropBottom = sc.scrollTop + sc.clientHeight * 5;
   const mid = sc.scrollTop + sc.clientHeight / 3;
+  const wanted: { i: number; d: number }[] = [];
   slots.forEach((s, i) => {
     const t = s.el.offsetTop;
     const b = t + s.el.offsetHeight;
     if (t <= mid && b + PAGE_GAP > mid) currentPage = i + 1;
-    if (b >= top && t <= bottom) void renderPage(i);
+    if (b >= keepTop && t <= keepBottom) {
+      if (s.renderedScale !== scale) wanted.push({ i, d: Math.abs((t + b) / 2 - mid) });
+    } else if ((b < dropTop || t > dropBottom) && s.renderedScale !== null) {
+      releasePage(s);
+    }
   });
+  renderQueue = wanted.sort((a, b) => a.d - b.d).map((w) => w.i);
   emitState();
+  void drainQueue();
+}
+
+function releasePage(slot: PageSlot) {
+  slot.task?.cancel();
+  slot.textLayer?.cancel();
+  slot.task = null;
+  slot.textLayer = null;
+  slot.renderedScale = null;
+  slot.el.querySelectorAll(".pdf-canvas, .textLayer").forEach((n) => {
+    if (n instanceof HTMLCanvasElement) n.width = n.height = 0; // free the bitmap now
+    n.remove();
+  });
+}
+
+/** Renders queued pages sequentially, yielding between pages so typing stays responsive. */
+async function drainQueue() {
+  if (rendering) return;
+  rendering = true;
+  try {
+    while (renderQueue.length) {
+      const index = renderQueue.shift()!;
+      await renderPage(index);
+      await new Promise((r) => setTimeout(r, 0));
+    }
+  } finally {
+    rendering = false;
+  }
 }
 
 async function renderPage(index: number) {
@@ -200,6 +258,16 @@ async function renderPage(index: number) {
 
   const page = await currentDoc.getPage(index + 1);
   if (doc !== currentDoc || slot.renderedScale !== renderScale) return;
+  // Long documents were laid out with the first page's size: fix this page if it differs.
+  const natural = page.getViewport({ scale: 1 });
+  if (Math.abs(natural.width - slot.width) > 0.5 || Math.abs(natural.height - slot.height) > 0.5) {
+    const sc = scroller.value;
+    const offset = offsetWithinPage(currentPage);
+    slot.width = natural.width;
+    slot.height = natural.height;
+    layout();
+    if (sc) sc.scrollTop = pageTop(currentPage) + offset * scale;
+  }
   const viewport = page.getViewport({ scale: renderScale });
   const dpr = window.devicePixelRatio || 1;
   const canvas = document.createElement("canvas");
@@ -220,7 +288,10 @@ async function renderPage(index: number) {
   } catch {
     return; // cancelled by a newer render
   }
-  if (doc !== currentDoc || slot.renderedScale !== renderScale) return;
+  if (doc !== currentDoc || slot.renderedScale !== renderScale) {
+    canvas.width = canvas.height = 0;
+    return;
+  }
 
   const textDiv = document.createElement("div");
   textDiv.className = "textLayer";
@@ -228,7 +299,10 @@ async function renderPage(index: number) {
   slot.textLayer = textLayer;
 
   // Swap the new rendering in only once it is complete, so recompiles don't flash.
-  slot.el.querySelectorAll(".pdf-canvas, .textLayer").forEach((n) => n.remove());
+  slot.el.querySelectorAll(".pdf-canvas, .textLayer").forEach((n) => {
+    if (n instanceof HTMLCanvasElement) n.width = n.height = 0;
+    n.remove();
+  });
   slot.el.prepend(canvas);
   slot.el.appendChild(textDiv);
   textLayer.render().catch(() => undefined);

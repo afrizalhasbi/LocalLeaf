@@ -4,15 +4,42 @@
 //! root and is rejected if it escapes it, through `..`, absolute paths or symlinks.
 
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+use crate::compiler::{CompilationResult, TeXEngine};
 
 /// Largest text file served to clients.
 pub const MAX_TEXT_FILE_BYTES: u64 = 2 * 1024 * 1024;
 
 /// Directory names never shown in the file tree.
 const HIDDEN_DIRS: &[&str] = &[".git", "node_modules", "target", ".texcraft"];
+
+/// Folders no client may read or write. `.git` in particular: `.git/config` and hooks can make
+/// git run arbitrary commands, so an agent must never be able to touch them.
+const FORBIDDEN_DIRS: &[&str] = &[".git"];
+
+/// Distinguishes temporary files of concurrent writes (in this process).
+static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Per-project settings shared by the desktop app and the MCP server, stored in
+/// `.texcraft/settings.json` next to the build output.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ProjectSettings {
+    pub display_name: Option<String>,
+    pub main_document: Option<String>,
+    pub engine: Option<TeXEngine>,
+    pub auto_compile: Option<bool>,
+    pub draft: Option<bool>,
+    pub stop_on_first_error: Option<bool>,
+}
+
+/// Where [`ProjectSettings`] live, relative to the project root.
+pub const SETTINGS_FILE: &str = ".texcraft/settings.json";
 
 #[derive(Debug, Clone)]
 pub struct Project {
@@ -82,6 +109,14 @@ impl Project {
         if !resolved.starts_with(&self.root) {
             bail!("path '{rel}' is outside the project root");
         }
+        if let Ok(inner) = resolved.strip_prefix(&self.root) {
+            if inner
+                .components()
+                .any(|c| FORBIDDEN_DIRS.iter().any(|d| c.as_os_str().eq_ignore_ascii_case(d)))
+            {
+                bail!("access to '{rel}' is not allowed (files inside .git are protected)");
+            }
+        }
         Ok(resolved)
     }
 
@@ -125,16 +160,21 @@ impl Project {
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
+        // Unique per write: concurrent saves (the editor, an MCP agent, two quick autosaves)
+        // must never share a temporary file, or one rename would publish the other's content.
         let tmp = path.with_file_name(format!(
-            ".{}.texcraft-tmp",
-            path.file_name().unwrap_or_default().to_string_lossy()
+            ".{}.{}-{}.texcraft-tmp",
+            path.file_name().unwrap_or_default().to_string_lossy(),
+            std::process::id(),
+            TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
         ));
         tokio::fs::write(&tmp, contents)
             .await
             .with_context(|| format!("cannot write {rel}"))?;
-        tokio::fs::rename(&tmp, &path)
-            .await
-            .with_context(|| format!("cannot write {rel}"))?;
+        if let Err(e) = tokio::fs::rename(&tmp, &path).await {
+            let _ = tokio::fs::remove_file(&tmp).await;
+            return Err(e).with_context(|| format!("cannot write {rel}"));
+        }
         Ok(())
     }
 
@@ -158,14 +198,22 @@ impl Project {
 
     pub async fn rename(&self, from: &str, to: &str) -> Result<()> {
         let src = self.resolve(from)?;
-        let dst = self.resolve(to)?;
+        let mut dst = self.resolve(to)?;
+        // `resolve` canonicalises existing paths, which on case-insensitive file systems would
+        // turn `main.tex` back into the existing `Main.tex`: keep the requested final name.
+        if let Some(name) = Path::new(to).file_name() {
+            dst.set_file_name(name);
+        }
         if src == self.root {
             bail!("cannot rename the project root");
         }
         if !src.exists() {
             bail!("{from} does not exist");
         }
-        if dst.exists() {
+        // On case-insensitive file systems (macOS, Windows) `Main.tex` → `main.tex` points at
+        // the same file: that rename is allowed.
+        let same_file = dst.canonicalize().map(|d| d == src).unwrap_or(false);
+        if dst.exists() && !same_file {
             bail!("{to} already exists");
         }
         if let Some(parent) = dst.parent() {
@@ -202,11 +250,19 @@ impl Project {
         if depth > 16 {
             return Ok(Vec::new());
         }
+        let entries = match std::fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(e) if depth == 0 => return Err(e).with_context(|| format!("cannot read {}", dir.display())),
+            // An unreadable subfolder (permissions, broken mount) must not hide the whole project.
+            Err(e) => {
+                tracing::warn!(dir = %dir.display(), "skipping unreadable folder: {e}");
+                return Ok(Vec::new());
+            }
+        };
         let mut nodes = Vec::new();
-        for entry in std::fs::read_dir(dir)? {
-            let entry = entry?;
+        for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
-            let file_type = entry.file_type()?;
+            let Ok(file_type) = entry.file_type() else { continue };
             if name == ".DS_Store" || name.ends_with(".texcraft-tmp") {
                 continue;
             }
@@ -231,6 +287,55 @@ impl Project {
                 .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
         });
         Ok(nodes)
+    }
+
+    /// Settings saved for this project, or `None` if there are none (or they are unreadable).
+    pub fn load_settings(&self) -> Option<ProjectSettings> {
+        let text = std::fs::read_to_string(self.root.join(SETTINGS_FILE)).ok()?;
+        serde_json::from_str(&text).ok()
+    }
+
+    pub async fn save_settings(&self, settings: &ProjectSettings) -> Result<()> {
+        let json = serde_json::to_string_pretty(settings)?;
+        self.write(SETTINGS_FILE, json.as_bytes()).await
+    }
+
+    /// The main document: the one saved in the settings if it still exists, else the guess.
+    pub fn main_document(&self) -> Option<String> {
+        self.load_settings()
+            .and_then(|s| s.main_document)
+            .filter(|m| self.resolve(m).map(|p| p.is_file()).unwrap_or(false))
+            .or_else(|| self.guess_main_document())
+    }
+
+    /// Serialises a compilation result with every path relative to the project root, and each
+    /// diagnostic's file resolved to the project file it refers to (TeX prints paths relative
+    /// to the main document's folder, e.g. `./chapters/intro.tex`). Diagnostics without a
+    /// file, or pointing outside the project, are attributed to the main document.
+    pub fn relativize_compilation(&self, entry: &Path, result: &CompilationResult) -> Value {
+        let mut value = serde_json::to_value(result).unwrap_or(Value::Null);
+        for key in ["pdf_path", "log_path", "synctex_path"] {
+            if let Some(Value::String(p)) = value.get(key) {
+                value[key] = Value::String(self.relative(Path::new(p)));
+            }
+        }
+        let workdir = entry.parent().unwrap_or(&self.root);
+        let entry_rel = self.relative(entry);
+        for list in ["errors", "warnings"] {
+            if let Some(Value::Array(items)) = value.get_mut(list) {
+                for item in items {
+                    let resolved = item
+                        .get("file")
+                        .and_then(Value::as_str)
+                        .and_then(|f| workdir.join(f).canonicalize().ok())
+                        .filter(|p| p.starts_with(&self.root))
+                        .map(|p| self.relative(&p))
+                        .unwrap_or_else(|| entry_rel.clone());
+                    item["file"] = Value::String(resolved);
+                }
+            }
+        }
+        value
     }
 
     /// Picks the most likely main document: a root-level `.tex` file containing `\documentclass`,
@@ -261,14 +366,14 @@ mod tests {
     use super::*;
 
     fn temp_project() -> (PathBuf, Project) {
+        // Tests run in parallel: a counter (not the clock) keeps their folders apart.
+        static NEXT: AtomicU64 = AtomicU64::new(0);
         let dir = std::env::temp_dir().join(format!(
             "texcraft-test-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            NEXT.fetch_add(1, Ordering::Relaxed)
         ));
+        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let project = Project::open(&dir).unwrap();
         (dir, project)
@@ -281,6 +386,85 @@ mod tests {
         assert!(project.resolve("/etc/passwd").is_err());
         assert!(project.resolve("a/../../b").is_err());
         assert!(project.resolve("chapters/new.tex").is_ok());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn protects_git_folder() {
+        let (dir, project) = temp_project();
+        std::fs::create_dir_all(dir.join(".git/hooks")).unwrap();
+        assert!(project.resolve(".git/config").is_err());
+        assert!(project.resolve(".git/hooks/pre-commit").is_err());
+        assert!(project.resolve("sub/.git/config").is_err());
+        assert!(project.resolve(".GIT/config").is_err());
+        assert!(project.resolve(".gitignore").is_ok());
+        assert!(project.resolve(".github/workflows/ci.yml").is_ok());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn concurrent_writes_never_collide() {
+        let (dir, project) = temp_project();
+        let tasks: Vec<_> = (0..32)
+            .map(|i| {
+                let p = project.clone();
+                tokio::spawn(async move { p.write("main.tex", format!("version {i}").as_bytes()).await })
+            })
+            .collect();
+        for t in tasks {
+            t.await.unwrap().unwrap();
+        }
+        let text = project.read_text("main.tex").await.unwrap();
+        assert!(text.starts_with("version "));
+        let leftovers = std::fs::read_dir(&dir).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".texcraft-tmp")).count();
+        assert_eq!(leftovers, 0);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn case_only_rename() {
+        let (dir, project) = temp_project();
+        project.write("Main.tex", b"x").await.unwrap();
+        project.rename("Main.tex", "main.tex").await.unwrap();
+        let names: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        assert_eq!(names, vec!["main.tex".to_string()]);
+        project.write("other.tex", b"y").await.unwrap();
+        assert!(project.rename("main.tex", "other.tex").await.is_err(), "must not overwrite another file");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_subfolder_is_skipped() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, project) = temp_project();
+        std::fs::write(dir.join("main.tex"), "x").unwrap();
+        std::fs::create_dir_all(dir.join("locked")).unwrap();
+        std::fs::set_permissions(dir.join("locked"), std::fs::Permissions::from_mode(0o000)).unwrap();
+        let tree = project.tree(&[]);
+        std::fs::set_permissions(dir.join("locked"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let tree = tree.expect("tree must still load");
+        assert!(tree.iter().any(|n| n.path == "main.tex"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn settings_round_trip() {
+        let (dir, project) = temp_project();
+        assert_eq!(project.load_settings(), None);
+        std::fs::write(dir.join("thesis.tex"), "\\documentclass{article}").unwrap();
+        std::fs::write(dir.join("other.tex"), "\\documentclass{article}").unwrap();
+        assert_eq!(project.main_document().as_deref(), Some("other.tex"));
+        let settings = ProjectSettings {
+            main_document: Some("thesis.tex".into()),
+            engine: Some(TeXEngine::LuaLaTeX),
+            ..Default::default()
+        };
+        project.save_settings(&settings).await.unwrap();
+        assert_eq!(project.load_settings(), Some(settings));
+        assert_eq!(project.main_document().as_deref(), Some("thesis.tex"));
+        std::fs::remove_file(dir.join("thesis.tex")).unwrap();
+        assert_eq!(project.main_document().as_deref(), Some("other.tex"), "stale setting ignored");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

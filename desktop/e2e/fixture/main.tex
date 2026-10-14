@@ -1,0 +1,32 @@
+\documentclass[11pt]{article}
+\usepackage{graphicx}
+\usepackage{amsmath}
+
+\title{LocalLeaf Test Document}
+\author{UI smoke test}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{Introduction}\label{sec:intro}
+Hello world, this is a line of text to select with the mouse.
+See Section~\ref{sec:method}, Figure~\ref{fig:leaf} and \cite{knuth}.
+
+\begin{equation}\label{eq:gauss}
+  \int_{-\infty}^{\infty} e^{-x^2}\,dx = \sqrt{\pi}
+\end{equation}
+
+\include{chapters/method}
+
+\section{Results}
+\subsection{Figures}
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.2\linewidth]{figures/leaf.png}
+  \caption{A leaf.}\label{fig:leaf}
+\end{figure}
+
+\bibliographystyle{plain}
+\bibliography{refs}
+\end{document}

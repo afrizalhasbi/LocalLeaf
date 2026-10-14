@@ -4,32 +4,27 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { compile, importFiles, state, syncToPdf } from "../lib/store";
 import { syncFromPdfView } from "../lib/pdfSync";
+import { readStored, writeStored } from "../lib/storage";
 import EditorPane from "./EditorPane.vue";
 import HeaderBar from "./HeaderBar.vue";
 import Icon from "./Icon.vue";
 import PdfPane from "./PdfPane.vue";
 import ResizeHandle from "./ResizeHandle.vue";
-import SettingsModal from "./SettingsModal.vue";
 import Sidebar from "./Sidebar.vue";
-import WordCountModal from "./WordCountModal.vue";
 
 // Panel sizes, remembered across sessions.
 function stored(key: string, fallback: number) {
-  try {
-    const v = Number(localStorage.getItem(key));
-    return v > 0 ? v : fallback;
-  } catch {
-    return fallback;
-  }
+  const v = Number(readStored(key));
+  return v > 0 ? v : fallback;
 }
-const sidebarWidth = ref(stored("texcraft:sidebarWidth", 240));
-const pdfRatio = ref(stored("texcraft:pdfRatio", 0.5));
+const sidebarWidth = ref(stored("sidebarWidth", 240));
+const pdfRatio = ref(stored("pdfRatio", 0.5));
 const splitArea = ref<HTMLDivElement>();
 
 watch([sidebarWidth, pdfRatio], () => {
   try {
-    localStorage.setItem("texcraft:sidebarWidth", String(sidebarWidth.value));
-    localStorage.setItem("texcraft:pdfRatio", String(pdfRatio.value));
+    writeStored("sidebarWidth", String(sidebarWidth.value));
+    writeStored("pdfRatio", String(pdfRatio.value));
   } catch {
     /* ignore */
   }
@@ -149,8 +144,6 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <SettingsModal v-if="state.ui.settingsOpen" />
-    <WordCountModal v-if="state.ui.wordCountOpen" />
   </div>
 </template>
 

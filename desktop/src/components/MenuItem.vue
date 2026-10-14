@@ -8,8 +8,11 @@ defineEmits<{ select: [] }>();
 <template>
   <button
     type="button"
-    class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[13px] disabled:cursor-not-allowed disabled:opacity-45"
-    :class="danger ? 'text-danger hover:bg-danger-light' : 'hover:bg-surface-hover'"
+    tabindex="-1"
+    :role="checked ? 'menuitemradio' : 'menuitem'"
+    :aria-checked="checked ? 'true' : undefined"
+    class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[13px] outline-none focus-visible:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-45"
+    :class="danger ? 'text-danger hover:bg-danger-light focus-visible:bg-danger-light' : 'hover:bg-surface-hover'"
     :disabled="disabled"
     @click="$emit('select')"
   >

@@ -59,6 +59,27 @@ impl TeXEngine {
         find_in_path(self.binary())
     }
 
+    /// Engines in order of preference when none is requested: pdfLaTeX first, like Overleaf.
+    pub const PREFERENCE: [TeXEngine; 4] = [
+        TeXEngine::PdfLaTeX,
+        TeXEngine::XeLaTeX,
+        TeXEngine::LuaLaTeX,
+        TeXEngine::Tectonic,
+    ];
+
+    /// The engine to use for a document when the caller does not choose one: the one its
+    /// preamble needs (`fontspec`, `\babelfont` → XeLaTeX; LuaTeX-only features → LuaLaTeX),
+    /// otherwise the first installed engine in [`TeXEngine::PREFERENCE`] order.
+    pub fn default_for(source: &str) -> Option<TeXEngine> {
+        let installed = |e: &TeXEngine| e.locate().is_some();
+        if let Some(needed) = required_engine(source) {
+            if installed(&needed) {
+                return Some(needed);
+            }
+        }
+        TeXEngine::PREFERENCE.into_iter().find(installed)
+    }
+
     fn args(self, entry_file: &Path, stem: &str, output_dir: &Path, opts: &CompileOptions) -> Vec<String> {
         let entry = entry_file.to_string_lossy().into_owned();
         let out = output_dir.to_string_lossy().into_owned();
@@ -220,6 +241,11 @@ pub async fn compile_with(
         .locate()
         .with_context(|| format!("{engine} is not installed or not in PATH"))?;
 
+    // One compilation at a time per output folder, across processes: the desktop app and an
+    // MCP agent share `.texcraft/build`, and two TeX runs writing the same .aux/.pdf corrupt
+    // each other. The lock is released when `_build_lock` is dropped.
+    let _build_lock = lock_output_dir(&output_dir).await?;
+
     tracing::info!(%engine, entry = %entry_abs.display(), out = %output_dir.display(), "compiling");
 
     let pdf_path = output_dir.join(format!("{stem}.pdf"));
@@ -297,6 +323,20 @@ pub async fn compile_with(
         errors,
         warnings,
     })
+}
+
+async fn lock_output_dir(output_dir: &Path) -> Result<std::fs::File> {
+    let lock_path = output_dir.join(".texcraft.lock");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&lock_path)
+        .with_context(|| format!("cannot create {}", lock_path.display()))?;
+    tokio::task::spawn_blocking(move || file.lock().map(|_| file))
+        .await
+        .context("build lock task failed")?
+        .context("cannot lock the build folder")
 }
 
 async fn run_tool(binary: &Path, args: &[String], cwd: &Path, env: &[(&str, String)]) -> Result<Output> {
@@ -384,6 +424,30 @@ fn mirror_dirs(src: &Path, dst: &Path, skip: &Path, depth: usize) {
         if std::fs::create_dir_all(&target).is_ok() {
             mirror_dirs(&path, &target, skip, depth + 1);
         }
+    }
+}
+
+/// The engine a preamble requires, if any (mirrors the desktop app's detection).
+pub fn required_engine(source: &str) -> Option<TeXEngine> {
+    static RES: OnceLock<[Regex; 2]> = OnceLock::new();
+    let [lua, unicode] = RES.get_or_init(|| {
+        [
+            Regex::new(r"onchar\s*=|\\directlua|\\usepackage(?:\[[^\]]*\])?\{[^}]*\b(?:luacode|luatexja|lua-ul|luamplib)\b").unwrap(),
+            Regex::new(r"\\usepackage(?:\[[^\]]*\])?\{[^}]*\b(?:fontspec|unicode-math|polyglossia|xeCJK|mathspec)\b|\\babelfont|\\setmainfont").unwrap(),
+        ]
+    });
+    // Ignore commented-out lines.
+    let code: String = source
+        .lines()
+        .map(|l| l.split_once('%').map_or(l, |(code, _)| code))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if lua.is_match(&code) {
+        Some(TeXEngine::LuaLaTeX)
+    } else if unicode.is_match(&code) {
+        Some(TeXEngine::XeLaTeX)
+    } else {
+        None
     }
 }
 
@@ -639,6 +703,31 @@ Overfull \\hbox (12.0pt too wide) in paragraph at lines 30--32
         let first = "x".repeat(TEX_LOG_WRAP);
         let joined = unwrap_log_lines(&format!("{first}\nrest\nnext"));
         assert_eq!(joined, vec![format!("{first}rest"), "next".to_string()]);
+    }
+
+    #[test]
+    fn detects_required_engine() {
+        assert_eq!(required_engine("\\documentclass{article}\\usepackage{amsmath}"), None);
+        assert_eq!(required_engine("\\usepackage{fontspec}"), Some(TeXEngine::XeLaTeX));
+        assert_eq!(required_engine("\\usepackage[T1]{fontenc,unicode-math}"), Some(TeXEngine::XeLaTeX));
+        assert_eq!(required_engine("\\babelprovide[import, onchar=ids fonts]{italian}"), Some(TeXEngine::LuaLaTeX));
+        assert_eq!(required_engine("% \\usepackage{fontspec}\n\\begin{document}"), None);
+    }
+
+    #[tokio::test]
+    async fn build_lock_is_exclusive() {
+        let dir = std::env::temp_dir().join(format!("texcraft-lock-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let first = lock_output_dir(&dir).await.unwrap();
+        let waiting = tokio::spawn({
+            let dir = dir.clone();
+            async move { lock_output_dir(&dir).await.map(|_| ()) }
+        });
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert!(!waiting.is_finished(), "second lock must wait while the first is held");
+        drop(first);
+        tokio::time::timeout(Duration::from_secs(2), waiting).await.unwrap().unwrap().unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

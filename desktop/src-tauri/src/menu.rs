@@ -92,7 +92,9 @@ pub fn install(app: &AppHandle) -> tauri::Result<()> {
         .hide_others()
         .show_all()
         .separator()
-        .quit()
+        // Our own Quit (not the predefined one): on macOS the predefined item terminates the
+        // app before the UI can save, so this one lets the UI flush pending edits first.
+        .item(&b.item("app.quit", "Quit LocalLeaf", Some("CmdOrCtrl+Q"))?)
         .build()?;
 
     let file = SubmenuBuilder::new(app, "File")
@@ -198,7 +200,8 @@ pub fn install(app: &AppHandle) -> tauri::Result<()> {
         .item(&b.item("build.clear_cache", "Clear Cached Files", None)?)
         .build()?;
 
-    let window = SubmenuBuilder::new(app, "Window").minimize().maximize().separator().close_window().build()?;
+    // ⌘W (Close Window) lives in the File menu, as in most Mac apps.
+    let window = SubmenuBuilder::new(app, "Window").minimize().maximize().build()?;
 
     let help = SubmenuBuilder::new(app, "Help")
         .item(&b.item("help.shortcuts", "Keyboard Shortcuts", Some("CmdOrCtrl+Shift+/"))?)

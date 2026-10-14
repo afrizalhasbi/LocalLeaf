@@ -42,7 +42,7 @@ pub fn rename_project_folder(state: State<'_, AppState>, root: String, new_name:
     rename_dir(&src, &new_name)
 }
 
-fn rename_dir(src: &Path, new_name: &str) -> CmdResult<String> {
+pub(crate) fn rename_dir(src: &Path, new_name: &str) -> CmdResult<String> {
     let name = valid_name(new_name)?;
     let dst = src.parent().ok_or("invalid project folder")?.join(name);
     if dst == src {

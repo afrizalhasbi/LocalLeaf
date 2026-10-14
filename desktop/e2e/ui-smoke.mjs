@@ -1,17 +1,17 @@
 // UI smoke test: renders the frontend in WebKit (the engine Tauri uses on macOS) with the
 // Tauri IPC bridged to Node, serving a real project folder, and saves screenshots.
 //
-// Usage: node e2e/ui-smoke.mjs <project_dir> <out_dir> [url]
-// Requires the Vite dev server (`npm run dev`) and a compiled PDF in <project_dir>/.texcraft/build.
+// Usage: node e2e/ui-smoke.mjs [project_dir] [out_dir] [url]
+// Defaults to the bundled fixture (e2e/fixture) and writes screenshots to e2e/screenshots.
+// Requires the Vite dev server (`npm run dev`) and a compiled PDF in
+// <project_dir>/.texcraft/build/main.pdf or <project_dir>/build/main.pdf.
 import { webkit } from "playwright";
 import fs from "node:fs";
 import path from "node:path";
 
-const [projectDir, outDir, url = "http://localhost:1420"] = process.argv.slice(2);
-if (!projectDir || !outDir) {
-  console.error("usage: node e2e/ui-smoke.mjs <project_dir> <out_dir> [url]");
-  process.exit(2);
-}
+const here = path.dirname(new URL(import.meta.url).pathname);
+const [projectDir = path.join(here, "fixture"), outDir = path.join(here, "screenshots"), url = "http://localhost:1420"] =
+  process.argv.slice(2);
 const root = fs.realpathSync(projectDir);
 // Path shown in the UI (e.g. DISPLAY_ROOT=/Users/you/Documents/thesis for README screenshots).
 const displayRoot = process.env.DISPLAY_ROOT ?? root;
@@ -32,6 +32,15 @@ function tree(dir = root) {
 }
 
 let failCompile = false;
+let exitConfirmed = false;
+let savedSettings = null;
+let renamedTo = null;
+// Answer of the native "Replace files?" dialog, and calls to import_files.
+let askAnswer = false;
+const imports = [];
+// Files "deleted on disk" during the test.
+const deleted = new Set();
+const pdfRel = fs.existsSync(path.join(root, ".texcraft/build/main.pdf")) ? ".texcraft/build/main.pdf" : "build/main.pdf";
 // Files saved by the app during the test (the real project folder is never modified).
 const written = new Map();
 let lastMenuSync = null;
@@ -41,12 +50,16 @@ const handlers = {
   initial_project: () => (process.env.NO_PROJECT ? null : root),
   open_project: () => ({
     root: displayRoot,
-    name: path.basename(root),
+    name: path.basename(displayRoot),
     mainDocument: "main.tex",
     tree: tree(),
     mcpCommand: ["/Applications/LocalLeaf.app/Contents/MacOS/localleaf", "--mcp", "--root", displayRoot],
   }),
-  get_tree: () => tree(),
+  get_tree: () => tree().filter((n) => !deleted.has(n.path)),
+  import_files: ({ targetDir, sources, overwrite }) => {
+    imports.push({ targetDir, names: sources.map((s) => path.basename(s.path)), overwrite });
+    return sources.map((s) => (targetDir ? `${targetDir}/` : "") + path.basename(s.path));
+  },
   close_project: () => null,
   list_available_engines: () => [
     { engine: "tectonic", installed: true, path: "/opt/homebrew/bin/tectonic" },
@@ -55,7 +68,10 @@ const handlers = {
     { engine: "lualatex", installed: false, path: null },
   ],
   synctex_available: () => true,
-  read_project_file: ({ path: p }) => written.get(p) ?? fs.readFileSync(path.join(root, p), "utf8"),
+  read_project_file: ({ path: p }) => {
+    if (deleted.has(p)) throw new Error(`cannot access ${p}`);
+    return written.get(p) ?? fs.readFileSync(path.join(root, p), "utf8");
+  },
   read_binary_file: ({ path: p }) => ({ __bytes: [...fs.readFileSync(path.join(root, p))] }),
   write_project_file: ({ path: p, content }) => {
     written.set(p, content);
@@ -65,7 +81,7 @@ const handlers = {
     engine,
     success: !failCompile,
     exit_code: failCompile ? 1 : 0,
-    pdf_path: failCompile ? null : ".texcraft/build/main.pdf",
+    pdf_path: failCompile ? null : pdfRel,
     log_path: ".texcraft/build/main.log",
     synctex_path: ".texcraft/build/main.synctex.gz",
     duration_ms: 812,
@@ -86,6 +102,18 @@ const handlers = {
     return null;
   },
   open_external: () => null,
+  save_project_settings: ({ settings }) => {
+    savedSettings = settings;
+    return null;
+  },
+  rename_open_project: ({ newName }) => {
+    renamedTo = newName;
+    return { ...handlers.open_project(), root: path.join(path.dirname(displayRoot), newName), name: newName };
+  },
+  confirm_exit: () => {
+    exitConfirmed = true;
+    return null;
+  },
   reveal_in_file_manager: () => null,
   frontend_log: ({ level, message }) => {
     if (level === "error") errors.push(message);
@@ -102,6 +130,11 @@ page.on("pageerror", (e) => {
 page.on("console", (m) => m.type() === "error" && console.log("[console.error]", m.text()));
 
 await page.exposeFunction("__bridge", (cmd, args) => {
+  // plugin-dialog's ask() shows a message dialog and compares the pressed button's label.
+  if (cmd === "plugin:dialog|message") {
+    const [ok, cancel] = args?.buttons?.OkCancelCustom ?? ["Yes", "No"];
+    return askAnswer ? ok : cancel;
+  }
   if (cmd.startsWith("plugin:")) return null;
   const h = handlers[cmd];
   if (!h) throw new Error(`unmocked command ${cmd}`);
@@ -147,7 +180,8 @@ await page.goto(url);
 await page.waitForSelector(".pdf-page canvas", { timeout: 20000 });
 await shot("1-editor-dark");
 
-// --- Editor behaviour regressions -------------------------------------------
+// --- Editor behaviour regressions (skipped with DOCS=1 for clean README screenshots) ---
+if (!process.env.DOCS) {
 const activeLine = () => page.locator(".cm-activeLine").innerText();
 const newLine = async (text) => {
   await page.click(".cm-content");
@@ -163,7 +197,10 @@ const expectLine = async (label, expected) => {
 for (const [typed, expected] of [["(", "()"], ["[", "[]"], ["{", "{}"], ["$", "$$"], ["\\[", "\\[\\]"], ["\\(", "\\(\\)"], ["a (b", "a (b)"], ["\\$", "\\$"]]) {
   await newLine(typed);
   await expectLine(`auto-close ${typed}`, expected);
+  // Remove the whole test line, closer included.
+  await page.keyboard.press("Meta+ArrowRight");
   await page.keyboard.press("Meta+Shift+ArrowLeft");
+  await page.keyboard.press("Backspace");
   await page.keyboard.press("Backspace");
 }
 await newLine("$x");
@@ -174,14 +211,17 @@ await page.keyboard.press("Backspace");
 await expectLine("Backspace removes an empty \\[ \\] pair", "");
 await newLine("\\secti");
 await page.waitForSelector(".cm-tooltip-autocomplete");
-await page.keyboard.press("Tab");
-await page.waitForTimeout(100);
+await page.keyboard.press("Tab"); // immediately, inside CodeMirror's interaction delay
+await page.waitForTimeout(250);
 if (!(await activeLine()).includes("\\section{")) throw new Error("Tab did not accept the completion: " + (await activeLine()));
 console.log("ok  Tab accepts completion:", (await activeLine()).trim());
 await page.keyboard.press("Escape");
 
 // Mouse drag selects text.
-const textLine = page.locator(".cm-line").nth(2);
+await page.click(".cm-content");
+await page.keyboard.press("Meta+ArrowUp");
+await page.waitForTimeout(150);
+const textLine = page.locator(".cm-line", { hasText: "Hello world" }).first();
 const lb = await textLine.boundingBox();
 await page.mouse.move(lb.x + 4, lb.y + lb.height / 2);
 await page.mouse.down();
@@ -198,9 +238,54 @@ await page.evaluate(() => window.__emit("project://changed", { paths: ["main.tex
 await page.waitForTimeout(800);
 if (await page.locator("text=changed on disk").count()) throw new Error("own autosave reported as an external change");
 console.log("ok  autosave echo ignored");
-// A real external edit is still picked up.
-written.set("main.tex", (written.get("main.tex") ?? "") + "\n% edited by an agent\n");
-await page.waitForTimeout(800); // let pending autosaves settle first
+
+// A real external edit (e.g. an AI agent via MCP) is still picked up.
+await page.waitForTimeout(1000); // let pending autosaves settle first
+written.set("main.tex", (written.get("main.tex") ?? "") + "% edited by an agent\n");
+await page.evaluate(() => window.__emit("project://changed", { paths: ["main.tex"] }));
+await page.waitForSelector(".cm-line:has-text('edited by an agent')", { timeout: 3000 });
+console.log("ok  external edit reloaded into the editor");
+
+// A change on disk while there are unsaved edits asks instead of overwriting.
+const conflictTo = async (choice) => {
+  await newLine(`my unsaved edit ${choice}`);
+  written.set("main.tex", "% rewritten by an agent\n" + (written.get("main.tex") ?? ""));
+  await page.evaluate(() => window.__emit("project://changed", { paths: ["main.tex"] }));
+  await page.waitForSelector("text=main.tex changed on disk", { timeout: 3000 });
+  await page.waitForTimeout(900); // autosave must stay paused while the dialog is open
+  if ((written.get("main.tex") ?? "").includes(`my unsaved edit ${choice}`)) throw new Error("autosave overwrote the disk version during a conflict");
+  await page.click(choice === "mine" ? "text=Keep my version" : "text=Load the version on disk");
+  await page.waitForTimeout(900);
+};
+await conflictTo("mine");
+if (!(written.get("main.tex") ?? "").includes("my unsaved edit mine")) throw new Error("'Keep my version' did not save");
+console.log("ok  conflict: keep my version");
+await conflictTo("disk");
+if (await page.locator(".cm-line:has-text('my unsaved edit disk')").count()) throw new Error("'Load the version on disk' kept the local edit");
+console.log("ok  conflict: load the version on disk");
+
+// Upload of an existing file asks first; "Skip" imports nothing, "Replace" overwrites.
+askAnswer = false;
+await page.evaluate(() => window.__emit("tauri://drag-drop", { paths: ["/tmp/elsewhere/refs.bib"], position: { x: 10, y: 10 } }));
+await page.waitForTimeout(500);
+if (imports.length) throw new Error("existing file imported although the user chose Skip");
+askAnswer = true;
+await page.evaluate(() => window.__emit("tauri://drag-drop", { paths: ["/tmp/elsewhere/refs.bib", "/tmp/elsewhere/new.png"], position: { x: 10, y: 10 } }));
+await page.waitForTimeout(500);
+if (imports.length !== 1 || imports[0].overwrite !== true || imports[0].names.length !== 2) throw new Error("replace upload: " + JSON.stringify(imports));
+console.log("ok  upload asks before replacing existing files");
+
+// The open file deleted on disk while edited: ask instead of recreating it.
+await newLine("edit before deletion");
+deleted.add("main.tex");
+await page.evaluate(() => window.__emit("project://changed", { paths: ["main.tex"] }));
+await page.waitForSelector("text=main.tex was deleted", { timeout: 3000 });
+await page.click("text=Keep my version");
+await page.waitForTimeout(600);
+deleted.delete("main.tex");
+if (!(written.get("main.tex") ?? "").includes("edit before deletion")) throw new Error("'Keep my version' after deletion did not save");
+console.log("ok  deleted-while-edited file asks, then saves");
+}
 
 
 // SyncTeX forward: put the cursor somewhere and click the → arrow.
@@ -260,6 +345,67 @@ await shot("10-sidebar-hidden");
 await page.click('button[title^="Show sidebar"]');
 await page.waitForSelector("text=File outline");
 await shot("11-sidebar-shown");
+
+// Project settings are written to the project (.texcraft/settings.json) when they change.
+if (!process.env.DOCS) {
+  await menu("engine:xelatex");
+  await page.waitForTimeout(600);
+  if (savedSettings?.engine !== "xelatex") throw new Error("engine change not saved to project settings: " + JSON.stringify(savedSettings));
+  await menu("engine:pdflatex");
+  console.log("ok  project settings saved");
+
+  // Menus work from the keyboard: arrows move, Escape closes and returns focus.
+  await page.click('button[aria-label="Compile options"]');
+  await page.waitForSelector('[role="menu"]');
+  const firstFocused = await page.evaluate(() => document.activeElement?.getAttribute("role"));
+  await page.keyboard.press("ArrowDown");
+  const movedTo = await page.evaluate(() => document.activeElement?.textContent?.trim());
+  await page.keyboard.press("Escape");
+  const back = await page.evaluate(() => document.activeElement?.getAttribute("aria-label"));
+  if (!firstFocused?.startsWith("menuitem") || !movedTo || back !== "Compile options") {
+    throw new Error(`menu keyboard navigation: ${firstFocused} / ${movedTo} / ${back}`);
+  }
+  console.log("ok  menus are keyboard accessible");
+
+  // Renaming from the header renames the folder too.
+  await page.click('button[title="Rename project"]');
+  await page.keyboard.press("Meta+A");
+  await page.keyboard.type("renamed-thesis");
+  await page.keyboard.press("Enter");
+  await page.waitForTimeout(400);
+  if (renamedTo !== "renamed-thesis") throw new Error("header rename did not rename the folder: " + renamedTo);
+  if (!(await page.locator("header >> text=renamed-thesis").count())) throw new Error("header not updated after rename");
+  console.log("ok  header rename renames the project folder");
+}
+
+// Quit (⌘Q) saves pending edits before exiting.
+if (!process.env.DOCS) {
+  await page.click(".cm-content");
+  await page.keyboard.press("Meta+ArrowDown");
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("typed right before quitting");
+  await menu("app.quit");
+  await page.waitForTimeout(300);
+  if (!exitConfirmed) throw new Error("quit did not reach confirm_exit");
+  // The editor may have another file open by now (an earlier step jumped to an error).
+  if (![...written.values()].some((t) => t.includes("typed right before quitting"))) throw new Error("quit lost the last edit");
+  console.log("ok  quit saves pending edits first");
+}
+
+// Settings and shortcuts open from the dashboard too, and don't reappear later.
+if (!process.env.DOCS) {
+  await page.click('button[title^="All projects"]');
+  await page.waitForSelector("text=All projects");
+  await menu("app.settings");
+  await page.waitForSelector("text=Auto-complete", { timeout: 2000 });
+  if (await page.locator("nav >> text=Compiler").count()) throw new Error("project-only Settings tabs shown on the dashboard");
+  await page.keyboard.press("Escape");
+  await page.locator("tbody tr").first().click(); // most recent project (renamed earlier)
+  await page.waitForSelector(".cm-content");
+  await page.waitForTimeout(600);
+  if (await page.locator("h2", { hasText: "Settings" }).count()) throw new Error("Settings popped up after opening a project");
+  console.log("ok  settings from the dashboard");
+}
 
 // Back to the project dashboard and open a project's ⋮ menu.
 await page.click('button[title^="All projects"]');
