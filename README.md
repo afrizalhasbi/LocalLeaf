@@ -176,7 +176,7 @@ More detail in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Roadmap
 
-Planned work, including git versioning in the interface and installing missing LaTeX packages from the logs, is listed in [ROADMAP.md](ROADMAP.md).
+Planned work, including git versioning in the interface, a guided installer for TeX and its packages, and installing missing packages straight from the logs, is listed in [ROADMAP.md](ROADMAP.md).
 
 ## Limitations
 
