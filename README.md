@@ -4,6 +4,8 @@
 
 # LocalLeaf
 
+[![M8ven Score](https://m8ven.ai/badge/mcp/leoaliperti-localleaf-1osh5g?v=582651fb0636648644fafd80c115e260)](https://m8ven.ai/mcp/leoaliperti-localleaf-1osh5g?s=readme)
+
 **A local-first LaTeX editor with an Overleaf-style interface.**
 Native Rust + Tauri, compiles with the TeX engines already on your computer, and doubles as an MCP server for AI agents.
 
