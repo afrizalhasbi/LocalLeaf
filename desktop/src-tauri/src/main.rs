@@ -544,6 +544,15 @@ fn start_watcher(app: AppHandle, root: PathBuf, compiling: Arc<AtomicBool>) -> n
 // ---------------------------------------------------------------------------
 
 fn main() {
+    // Workaround for WebKitGTK on Wayland (tauri-apps/tauri#14427, tauri-apps/tauri#9394):
+    // without it the mouse wheel does not scroll the webview (scrollbar dragging still
+    // works) and layered content such as the editor's selection highlight can go stale.
+    // Only set it when the user has not chosen a value themselves.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()

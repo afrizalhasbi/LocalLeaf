@@ -382,10 +382,36 @@ function onDblClick(e: MouseEvent) {
 
 function onWheel(e: WheelEvent) {
   // Pinch-to-zoom on trackpads arrives as ctrl+wheel.
-  if (!e.ctrlKey) return;
+  if (e.ctrlKey) {
+    e.preventDefault();
+    const factor = Math.exp(-e.deltaY / 100);
+    setScale(scale * factor, scale * factor);
+    return;
+  }
+  // WebKitGTK does not chain wheel scrolling from the text layer to this
+  // scroller, so the wheel deltas are applied here directly. preventDefault
+  // keeps engines that do chain the scroll from scrolling it a second time.
+  const sc = scroller.value;
+  if (!sc) return;
+  let dy = e.deltaY;
+  let dx = e.deltaX;
+  if (e.deltaMode === 1) {
+    dy *= 16; // lines
+    dx *= 16;
+  } else if (e.deltaMode === 2) {
+    dy *= sc.clientHeight; // pages
+    dx *= sc.clientWidth;
+  }
+  if (e.shiftKey && !dx && dy) {
+    dx = dy;
+    dy = 0;
+  }
+  const canY = dy !== 0 && (dy < 0 ? sc.scrollTop > 0 : sc.scrollTop + sc.clientHeight < sc.scrollHeight);
+  const canX = dx !== 0 && (dx < 0 ? sc.scrollLeft > 0 : sc.scrollLeft + sc.clientWidth < sc.scrollWidth);
+  if (!canY && !canX) return;
   e.preventDefault();
-  const factor = Math.exp(-e.deltaY / 100);
-  setScale(scale * factor, scale * factor);
+  if (canY) sc.scrollTop += dy;
+  if (canX) sc.scrollLeft += dx;
 }
 
 // ---------------------------------------------------------------------------

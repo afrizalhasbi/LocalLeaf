@@ -68,6 +68,9 @@ const bracketsExt = (): Extension => (settings.autoCloseBrackets ? latexAutoClos
 const spellExt = (): Extension =>
   EditorView.contentAttributes.of({ spellcheck: settings.spellCheck ? "true" : "false", autocorrect: "off", autocapitalize: "off" });
 const activeLineExt = (): Extension => (settings.highlightActiveLine ? [highlightActiveLine(), highlightActiveLineGutter()] : []);
+// WebKitGTK (Tauri's Linux webview) fails to repaint CodeMirror's drawn selection
+// layer, so on Linux we keep the browser's own selection rendering instead.
+const isLinux = navigator.userAgent.includes("Linux");
 
 // Briefly highlights the line we jumped to (SyncTeX, log entries, outline).
 const flashEffect = StateEffect.define<number | null>();
@@ -95,7 +98,7 @@ function extensions(): Extension[] {
     lineNumbers(),
     highlightSpecialChars(),
     history(),
-    drawSelection(),
+    isLinux ? [] : drawSelection(),
     dropCursor(),
     EditorState.allowMultipleSelections.of(true),
     indentOnInput(),

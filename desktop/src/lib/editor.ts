@@ -48,7 +48,7 @@ interface Palette {
 const PALETTES: Record<EditorThemeId, Palette> = {
   "overleaf-dark": {
     dark: true, bg: "#1e2530", fg: "#e7e9ee", gutterBg: "#1e2530", gutterFg: "#677283", gutterBorder: "#2f3a4c",
-    activeLine: "#262f3c", activeGutter: "#2f3a4c", selection: "#3a4d6b", cursor: "#f4f5f6",
+    activeLine: "#262f3c", activeGutter: "#2f3a4c", selection: "#3b82f6", cursor: "#f4f5f6",
     command: "#7aa5f0", math: "#f0b86c", arg: "#9ad38c", bracket: "#c3c9d4", comment: "#7d8796", number: "#e88f8f",
     matchBracket: "#4a5a72", searchMatch: "#6b5a1e",
   },
@@ -66,13 +66,13 @@ const PALETTES: Record<EditorThemeId, Palette> = {
   },
   "solarized-dark": {
     dark: true, bg: "#002b36", fg: "#93a1a1", gutterBg: "#01313f", gutterFg: "#586e75", gutterBorder: "#01313f",
-    activeLine: "#073642", activeGutter: "#073642", selection: "#0f4a5a", cursor: "#d30102",
+    activeLine: "#073642", activeGutter: "#073642", selection: "#268bd2", cursor: "#d30102",
     command: "#268bd2", math: "#cb4b16", arg: "#859900", bracket: "#93a1a1", comment: "#586e75", number: "#d33682",
     matchBracket: "#1f5563", searchMatch: "#584b0e",
   },
   monokai: {
     dark: true, bg: "#272822", fg: "#f8f8f2", gutterBg: "#2f3129", gutterFg: "#8f908a", gutterBorder: "#2f3129",
-    activeLine: "#3e3d32", activeGutter: "#3e3d32", selection: "#49483e", cursor: "#f8f8f0",
+    activeLine: "#3e3d32", activeGutter: "#3e3d32", selection: "#8d8d55", cursor: "#f8f8f0",
     command: "#66d9ef", math: "#e6db74", arg: "#a6e22e", bracket: "#f8f8f2", comment: "#75715e", number: "#ae81ff",
     matchBracket: "#55554a", searchMatch: "#6b5f1e",
   },
