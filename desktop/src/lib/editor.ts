@@ -300,10 +300,12 @@ export const tabAcceptsCompletion = Prec.highest(
 // ---------------------------------------------------------------------------
 
 /**
- * CodeMirror ends a mouse selection as soon as a mousemove reports `buttons == 0`.
- * In macOS WKWebView that happens during real drags (e.g. trackpad tap-to-drag or
- * three-finger drag), so dragging only moved the cursor. This tracks the button
- * ourselves, from mousedown to mouseup, and extends the selection while it moves.
+ * WebKitGTK reports `buttons == 0` on mousemoves during real drags (and macOS WKWebView
+ * does the same for trackpad tap-to-drag / three-finger drag), which makes CodeMirror's
+ * builtin mouse selection destroy itself on the first move and collapse the drag back to
+ * the click position. So this owns the whole gesture instead of racing the builtin: it
+ * handles the click (cursor placement, shift-click extend) and extends the selection on
+ * every mousemove until mouseup. Returning true keeps the builtin out entirely.
  */
 export function reliableDragSelection(): Extension {
   return EditorView.domEventHandlers({
@@ -315,6 +317,8 @@ export function reliableDragSelection(): Extension {
       // Pressing inside the selection may start a text drag: leave that to CodeMirror.
       if (!main.empty && start > main.from && start < main.to && !event.shiftKey) return false;
       const anchor = event.shiftKey ? main.anchor : start;
+      view.focus();
+      view.dispatch({ selection: { anchor, head: start }, userEvent: "select.pointer" });
       const x0 = event.clientX;
       const y0 = event.clientY;
       let moved = false;
@@ -323,6 +327,7 @@ export function reliableDragSelection(): Extension {
         if (!moved && Math.abs(e.clientX - x0) + Math.abs(e.clientY - y0) < 4) return;
         moved = true;
         const head = view.posAtCoords({ x: e.clientX, y: e.clientY }, false);
+        if (head == null) return;
         const sel = view.state.selection.main;
         if (sel.anchor !== anchor || sel.head !== head) {
           view.dispatch({ selection: { anchor, head }, scrollIntoView: true, userEvent: "select.pointer" });
@@ -336,7 +341,8 @@ export function reliableDragSelection(): Extension {
       document.addEventListener("mousemove", move, true);
       document.addEventListener("mouseup", up, true);
       window.addEventListener("blur", up);
-      return false; // CodeMirror still handles the click itself (cursor, focus).
+      event.preventDefault();
+      return true; // this gesture is ours; CodeMirror's builtin must not run
     },
   });
 }
