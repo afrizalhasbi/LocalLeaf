@@ -1,6 +1,6 @@
 // Files: the project tree, opening and autosaving files, disk changes and conflicts.
 import { nextTick } from "vue";
-import { ask } from "@tauri-apps/plugin-dialog";
+import { dialog } from "./bridge";
 import { ipc, errorMessage } from "./ipc";
 import { basename, dirname, extractBibKeys, extractLabels } from "./latex";
 import { allFiles, editorBridge, fileKind, findNode, guarded, notify, session, state } from "./state";
@@ -104,7 +104,7 @@ export async function importFiles(paths: string[], targetDir = targetFolder()) {
   let overwrite = false;
   if (existing.length) {
     const list = existing.map(name).join(", ");
-    overwrite = await ask(
+    overwrite = await dialog.ask(
       `${list} already ${existing.length === 1 ? "exists" : "exist"} in ${targetDir || "the project"}. Replace ${existing.length === 1 ? "it" : "them"}?`,
       { title: "Replace files?", kind: "warning", okLabel: "Replace", cancelLabel: "Skip" },
     ).catch(() => false);

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // Overleaf's project dashboard, backed by local folders.
 import { computed, ref, watch } from "vue";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { open as openDialog } from "../lib/bridge";
 import {
   createProject,
   forgetRecent,

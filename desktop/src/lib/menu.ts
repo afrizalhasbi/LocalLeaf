@@ -1,8 +1,6 @@
 // Native menu bar: dispatches `menu://action` events and mirrors UI state into check marks.
 import { watch } from "vue";
-import { listen } from "@tauri-apps/api/event";
-import { invoke } from "@tauri-apps/api/core";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { invoke, listen, dialog } from "./bridge";
 import { ipc, type Engine } from "./ipc";
 import { settings, type OverallTheme } from "./settings";
 import {
@@ -61,7 +59,7 @@ function openSettings(tab: typeof state.ui.settingsTab = "editor") {
 }
 
 async function openFolder() {
-  const dir = await openDialog({ directory: true, title: "Open LaTeX project folder" });
+  const dir = await dialog.open({ directory: true, title: "Open LaTeX project folder" });
   if (typeof dir === "string") await openProject(dir);
 }
 
@@ -182,8 +180,8 @@ async function handle(id: string) {
 }
 
 export async function installMenuBar() {
-  await listen<string>("menu://action", (e) => {
-    void handle(e.payload).catch((err) => notify(String(err), "error"));
+  await listen<string>("menu://action", (payload) => {
+    void handle(payload).catch((err) => notify(String(err), "error"));
   });
 
   // Keep check marks and enabled items in sync with the UI.

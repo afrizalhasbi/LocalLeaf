@@ -1,5 +1,5 @@
-// UI smoke test: renders the frontend in WebKit (the engine Tauri uses on macOS) with the
-// Tauri IPC bridged to Node, serving a real project folder, and saves screenshots.
+// UI smoke test: renders the frontend in WebKit with the app bridge (window.localleaf)
+// mocked in Node, serving a real project folder, and saves screenshots.
 //
 // Usage: node e2e/ui-smoke.mjs [project_dir] [out_dir] [url]
 // Defaults to the bundled fixture (e2e/fixture) and writes screenshots to e2e/screenshots.
@@ -48,6 +48,9 @@ const errors = [];
 
 const handlers = {
   initial_project: () => (process.env.NO_PROJECT ? null : root),
+  dialog_ask: () => askAnswer,
+  dialog_open: () => null,
+  dialog_save: () => null,
   open_project: () => ({
     root: displayRoot,
     name: path.basename(displayRoot),
@@ -72,7 +75,7 @@ const handlers = {
     if (deleted.has(p)) throw new Error(`cannot access ${p}`);
     return written.get(p) ?? fs.readFileSync(path.join(root, p), "utf8");
   },
-  read_binary_file: ({ path: p }) => ({ __bytes: [...fs.readFileSync(path.join(root, p))] }),
+  read_binary_file: ({ path: p }) => ({ base64: fs.readFileSync(path.join(root, p)).toString("base64") }),
   write_project_file: ({ path: p, content }) => {
     written.set(p, content);
     return null;
@@ -130,42 +133,34 @@ page.on("pageerror", (e) => {
 page.on("console", (m) => m.type() === "error" && console.log("[console.error]", m.text()));
 
 await page.exposeFunction("__bridge", (cmd, args) => {
-  // plugin-dialog's ask() shows a message dialog and compares the pressed button's label.
-  if (cmd === "plugin:dialog|message") {
-    const [ok, cancel] = args?.buttons?.OkCancelCustom ?? ["Yes", "No"];
-    return askAnswer ? ok : cancel;
-  }
-  if (cmd.startsWith("plugin:")) return null;
   const h = handlers[cmd];
   if (!h) throw new Error(`unmocked command ${cmd}`);
   return h(args ?? {});
 });
 await page.addInitScript(() => {
-  let next = 1;
-  const callbacks = new Map();
   const listeners = [];
   // Lets the test fire native events such as `menu://action`.
-  window.__emit = (event, payload) =>
-    listeners.filter((l) => l.event === event).forEach((l) => callbacks.get(l.handler)?.({ event, id: 0, payload }));
-  window.__TAURI_INTERNALS__ = {
-    metadata: { currentWindow: { label: "main" }, currentWebview: { windowLabel: "main", label: "main" } },
-    transformCallback: (cb) => {
-      const id = next++;
-      callbacks.set(id, cb);
-      return id;
+  window.__emit = (event, payload) => listeners.forEach((l) => l({ event, payload }));
+  // Absolute paths the "OS file manager" would provide for dropped files, by name.
+  const dropPaths = { "refs.bib": "/tmp/elsewhere/refs.bib", "new.png": "/tmp/elsewhere/new.png" };
+  window.localleaf = {
+    invoke: async (cmd, args) => window.__bridge(cmd, args),
+    listen: (event, handler) => {
+      const l = (msg) => msg.event === event && handler({ payload: msg.payload });
+      listeners.push(l);
+      return () => {
+        const i = listeners.indexOf(l);
+        if (i >= 0) listeners.splice(i, 1);
+      };
     },
-    unregisterCallback: () => undefined,
-    convertFileSrc: (p) => p,
-    invoke: async (cmd, args) => {
-      if (cmd === "plugin:event|listen") {
-        listeners.push({ event: args.event, handler: args.handler });
-        return next++;
-      }
-      const r = await window.__bridge(cmd, args);
-      return r && r.__bytes ? new Uint8Array(r.__bytes).buffer : r;
+    dialog: {
+      open: (opts) => window.__bridge("dialog_open", opts),
+      save: (opts) => window.__bridge("dialog_save", opts),
+      ask: (message, opts) => window.__bridge("dialog_ask", { message, ...opts }),
     },
+    setTitle: async () => undefined,
+    pathForFile: (file) => dropPaths[file.name] ?? null,
   };
-  window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => undefined };
 });
 
 const menu = (id) => page.evaluate((id) => window.__emit("menu://action", id), id);
@@ -265,12 +260,20 @@ if (await page.locator(".cm-line:has-text('my unsaved edit disk')").count()) thr
 console.log("ok  conflict: load the version on disk");
 
 // Upload of an existing file asks first; "Skip" imports nothing, "Replace" overwrites.
+async function window_drop(names) {
+  await page.evaluate((names) => {
+    const dt = new DataTransfer();
+    for (const name of names) dt.items.add(new File([""], name, { type: "application/octet-stream" }));
+    window.dispatchEvent(new DragEvent("dragenter", { dataTransfer: dt }));
+    window.dispatchEvent(new DragEvent("drop", { dataTransfer: dt, bubbles: true }));
+  }, names);
+}
 askAnswer = false;
-await page.evaluate(() => window.__emit("tauri://drag-drop", { paths: ["/tmp/elsewhere/refs.bib"], position: { x: 10, y: 10 } }));
+await window_drop(["refs.bib"]);
 await page.waitForTimeout(500);
 if (imports.length) throw new Error("existing file imported although the user chose Skip");
 askAnswer = true;
-await page.evaluate(() => window.__emit("tauri://drag-drop", { paths: ["/tmp/elsewhere/refs.bib", "/tmp/elsewhere/new.png"], position: { x: 10, y: 10 } }));
+await window_drop(["refs.bib", "new.png"]);
 await page.waitForTimeout(500);
 if (imports.length !== 1 || imports[0].overwrite !== true || imports[0].names.length !== 2) throw new Error("replace upload: " + JSON.stringify(imports));
 console.log("ok  upload asks before replacing existing files");

@@ -1,5 +1,5 @@
-// Typed wrappers around the Tauri commands exposed by src-tauri/src/main.rs.
-import { invoke } from "@tauri-apps/api/core";
+// Typed wrappers around the backend commands exposed by desktop/sidecar/src/main.rs.
+import { invoke } from "./bridge";
 
 export type Engine = "tectonic" | "pdflatex" | "xelatex" | "lualatex";
 
@@ -87,7 +87,14 @@ export const ipc = {
   getTree: () => invoke<FileNode[]>("get_tree"),
 
   readFile: (path: string) => invoke<string>("read_project_file", { path }),
-  readBinary: async (path: string) => new Uint8Array(await invoke<ArrayBuffer>("read_binary_file", { path })),
+  readBinary: async (path: string) => {
+    // Binary files travel as base64 over the sidecar's JSON protocol.
+    const { base64 } = await invoke<{ base64: string }>("read_binary_file", { path });
+    const bin = atob(base64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return bytes;
+  },
   writeFile: (path: string, content: string) => invoke<void>("write_project_file", { path, content }),
   createFile: (path: string) => invoke<void>("create_file", { path }),
   createFolder: (path: string) => invoke<void>("create_folder", { path }),

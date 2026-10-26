@@ -5,10 +5,8 @@ import "@fontsource/jetbrains-mono/500.css";
 import "@fontsource/jetbrains-mono/700.css";
 import "./style.css";
 import App from "./App.vue";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, listen } from "./lib/bridge";
 import { applyUiTheme } from "./lib/settings";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import { listen } from "@tauri-apps/api/event";
 import { flushBeforeExit, openProject } from "./lib/store";
 import { installMenuBar } from "./lib/menu";
 
@@ -28,15 +26,9 @@ app.config.errorHandler = (err, _instance, info) => {
 app.mount("#app");
 report("info", "frontend mounted");
 
-// Never lose the last keystrokes: save before the window closes (⌘W, red button) and before
-// the app quits (⌘Q, which the backend holds until `confirm_exit`).
-void getCurrentWindow()
-  .onCloseRequested(async () => {
-    await flushBeforeExit().catch(() => undefined);
-  })
-  .catch(() => undefined);
-// Quitting from the Dock or logging out terminates the app without warning on macOS:
-// save whenever the window loses focus, so nothing is pending at that point.
+// Never lose the last keystrokes: saving happens before the app quits. Closing the window
+// (titlebar button, ⌘W) and quitting (⌘Q) are held by the main process until `confirm_exit`;
+// `app://exit-requested` asks the UI to save first.
 window.addEventListener("blur", () => void flushBeforeExit().catch(() => undefined));
 void listen("app://exit-requested", async () => {
   await flushBeforeExit().catch(() => undefined);

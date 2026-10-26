@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { getCurrentWebview } from "@tauri-apps/api/webview";
-import type { UnlistenFn } from "@tauri-apps/api/event";
+import { pathForFile } from "../lib/bridge";
 import { compile, importFiles, state, syncToPdf } from "../lib/store";
 import { syncFromPdfView } from "../lib/pdfSync";
 import { readStored, writeStored } from "../lib/storage";
@@ -55,24 +54,45 @@ function onKey(e: KeyboardEvent) {
   }
 }
 
-// Files dragged in from Finder/Explorer are uploaded into the selected folder.
+// Files dragged in from the OS file manager are uploaded into the selected folder.
 const dropping = ref(false);
-let unlistenDrop: UnlistenFn | null = null;
-onMounted(async () => {
+let dragDepth = 0;
+function onDragEnter(e: DragEvent) {
+  if (!e.dataTransfer?.types.includes("Files")) return;
+  e.preventDefault();
+  dragDepth++;
+  dropping.value = true;
+}
+function onDragOver(e: DragEvent) {
+  if (!e.dataTransfer?.types.includes("Files")) return;
+  e.preventDefault(); // needed so the drop is allowed
+  dropping.value = true;
+}
+function onDragLeave() {
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (!dragDepth) dropping.value = false;
+}
+function onDrop(e: DragEvent) {
+  e.preventDefault();
+  dragDepth = 0;
+  dropping.value = false;
+  const files = Array.from(e.dataTransfer?.files ?? []);
+  const paths = files.map((f) => pathForFile(f) ?? f.name).filter((p) => !!p);
+  if (paths.length) void importFiles(paths);
+}
+onMounted(() => {
   window.addEventListener("keydown", onKey);
-  unlistenDrop = await getCurrentWebview().onDragDropEvent((event) => {
-    const p = event.payload;
-    if (p.type === "enter" || p.type === "over") dropping.value = true;
-    else if (p.type === "leave") dropping.value = false;
-    else if (p.type === "drop") {
-      dropping.value = false;
-      if (p.paths.length) void importFiles(p.paths);
-    }
-  });
+  window.addEventListener("dragenter", onDragEnter);
+  window.addEventListener("dragover", onDragOver);
+  window.addEventListener("dragleave", onDragLeave);
+  window.addEventListener("drop", onDrop);
 });
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", onKey);
-  unlistenDrop?.();
+  window.removeEventListener("dragenter", onDragEnter);
+  window.removeEventListener("dragover", onDragOver);
+  window.removeEventListener("dragleave", onDragLeave);
+  window.removeEventListener("drop", onDrop);
 });
 
 </script>

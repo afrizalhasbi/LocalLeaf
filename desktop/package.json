@@ -3,13 +3,13 @@
   "private": true,
   "version": "1.0.1",
   "type": "module",
+  "main": "electron/main.cjs",
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
     "typecheck": "vue-tsc --noEmit",
-    "tauri": "tauri",
-    "app": "tauri dev",
-    "app:build": "tauri build",
+    "app": "electron .",
+    "app:build": "vite build && electron-builder",
     "test": "vitest run"
   },
   "dependencies": {
@@ -24,15 +24,12 @@
     "@lezer/highlight": "^1.2.5",
     "@replit/codemirror-emacs": "^6.1.0",
     "@replit/codemirror-vim": "^6.4.0",
-    "@tauri-apps/api": "^2.12.3",
-    "@tauri-apps/plugin-dialog": "^2.8.2",
     "material-symbols": "^0.48.0",
     "pdfjs-dist": "^6.4.299",
     "vue": "^3.5.44"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",
-    "@tauri-apps/cli": "^2.12.2",
     "@types/node": "^26.6.5",
     "@vitejs/plugin-vue": "^6.0.10",
     "playwright": "^1.64.0",

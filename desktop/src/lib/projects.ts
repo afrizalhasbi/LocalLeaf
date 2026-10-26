@@ -1,7 +1,6 @@
 // Project lifecycle: recent projects, per-project settings, opening and closing projects.
 import { watch } from "vue";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { listen, setTitle, type UnlistenFn } from "./bridge";
 import { ipc, type Engine, type ProjectInfo } from "./ipc";
 import { requiredEngine } from "./latex";
 import { readStored, removeStored, writeStored } from "./storage";
@@ -109,9 +108,7 @@ watch(
 watch(
   () => [state.displayName, state.info] as const,
   ([name]) => {
-    void getCurrentWindow()
-      .setTitle(state.info ? `${name} — LocalLeaf` : "LocalLeaf")
-      .catch(() => undefined);
+    setTitle(state.info ? `${name} — LocalLeaf` : "LocalLeaf");
   },
 );
 
@@ -243,7 +240,7 @@ export async function renameProject(name: string) {
 async function subscribeToEvents() {
   unlisteners.forEach((u) => u());
   unlisteners = [
-    await listen<{ paths: string[] }>("project://changed", (e) => void onExternalChange(e.payload.paths)),
+    await listen<{ paths: string[] }>("project://changed", (paths) => void onExternalChange(paths.paths)),
     await listen("project://pdf-changed", () => {
       // Ignore the echo of our own compile; reload when an agent compiled via MCP.
       if (!state.compiling && Date.now() - state.lastCompileAt > 2000) void reloadPdf();

@@ -1,5 +1,5 @@
 // UI actions that need native dialogs.
-import { open, save } from "@tauri-apps/plugin-dialog";
+import { dialog } from "./bridge";
 import { ipc, errorMessage } from "./ipc";
 import { importFiles, notify, state } from "./store";
 import { basename } from "./latex";
@@ -9,7 +9,7 @@ export async function downloadPdf() {
     notify("Compile the project first");
     return;
   }
-  const destination = await save({
+  const destination = await dialog.save({
     title: "Download PDF",
     defaultPath: `${state.displayName || basename(state.pdfPath).replace(/\.pdf$/, "")}.pdf`,
     filters: [{ name: "PDF", extensions: ["pdf"] }],
@@ -24,7 +24,7 @@ export async function downloadPdf() {
 }
 
 export async function uploadFiles() {
-  const picked = await open({ multiple: true, title: "Upload files to the project" });
+  const picked = await dialog.open({ multiple: true, title: "Upload files to the project" });
   if (!picked) return;
   const paths = Array.isArray(picked) ? picked : [picked];
   if (paths.length) await importFiles(paths);
