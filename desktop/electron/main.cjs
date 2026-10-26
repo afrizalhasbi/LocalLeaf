@@ -372,10 +372,12 @@ async function askDialog(sender, opts = {}) {
 // ---------------------------------------------------------------------------
 
 function findInitialProject() {
-  // `LocalLeaf path/to/project` opens that folder (dev: `electron . path/to/project`).
-  const args = process.argv.slice(app.isPackaged ? 1 : 2);
+  // `LocalLeaf path/to/project` opens that folder. argv[1] is the app directory itself
+  // (both packaged and system-Electron layouts), so it is filtered out explicitly.
+  const appPath = app.getAppPath();
+  const args = process.argv.slice(1).filter((a) => a !== appPath && a !== ".");
   for (const arg of args) {
-    if (!arg.startsWith("-") && arg !== "." && fs.existsSync(arg) && fs.statSync(arg).isDirectory()) {
+    if (!arg.startsWith("-") && fs.existsSync(arg) && fs.statSync(arg).isDirectory()) {
       return fs.realpathSync(arg);
     }
   }

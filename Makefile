@@ -2,7 +2,8 @@ SIDECAR := target/release/localleaf-sidecar
 APPDIR := $(HOME)/.local/share/LocalLeaf
 
 dev:
-	setsid sh -c 'cd desktop && npx vite & \
+	setsid sh -c 'cd desktop && npx vite & VITE=$$!; \
+		trap "kill $$VITE" EXIT; \
 		cd desktop && until curl -s -o /dev/null http://localhost:1420; do sleep 0.3; done && \
 		ELECTRON_START_URL=http://localhost:1420 electron .'
 

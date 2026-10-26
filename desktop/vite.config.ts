@@ -12,6 +12,8 @@ export default defineConfig({
     watch: { ignored: ["**/sidecar/**", "**/electron/**"] },
   },
   envPrefix: ["VITE_"],
+  // Relative asset URLs, so the built app also loads from file:// (the installed app).
+  base: "./",
   build: {
     target: "chrome120",
     chunkSizeWarningLimit: 4096,
